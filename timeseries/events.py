@@ -85,33 +85,48 @@ def keys(df: pd.DataFrame) -> pd.DataFrame:
 
 # ------------------------------------------------------------------ presence
 def build_presence(dates: list[str], in_dir: str = IN_DIR) -> pd.DataFrame:
-    """One row per parcel id ever seen, with a bitmap of the snapshots it is in."""
+    """One row per parcel id ever seen, with a bitmap of the snapshots it is in.
+
+    Vectorised: a parcel id is unique within a snapshot, so each contributes a
+    distinct power of two and ``np.bitwise_or.at`` folds 25.5 M (id, snapshot)
+    pairs into one ``uint32`` per parcel in a single pass.
+    """
     if len(dates) > 32:
         raise RuntimeError(f"{len(dates)} snapshots exceeds the uint32 bitmap width")
-    acc: dict[str, int] = {}
+    frames = []
     for i, date in enumerate(dates):
         ids = pd.read_parquet(_path(date, in_dir), columns=["parcel_id"])["parcel_id"]
-        bit = 1 << i
-        for pid in ids.to_numpy():
-            acc[pid] = acc.get(pid, 0) | bit
-        log.info("  presence %s (+%s ids, %s total)", date, f"{len(ids):,}", f"{len(acc):,}")
-    pres = pd.DataFrame({"parcel_id": list(acc.keys()),
-                         "bitmap": np.fromiter(acc.values(), dtype="uint32", count=len(acc))})
-    bm = pres["bitmap"].to_numpy()
+        frames.append(pd.DataFrame({"parcel_id": ids,
+                                    "bit": np.uint32(1) << np.uint32(i)}))
+    allv = pd.concat(frames, ignore_index=True)
+    del frames
+    log.info("  presence: %s (id, snapshot) pairs over %d snapshots",
+             f"{len(allv):,}", len(dates))
+
+    codes, uniques = pd.factorize(allv["parcel_id"], sort=False)
+    bm = np.zeros(len(uniques), dtype="uint32")
+    np.bitwise_or.at(bm, codes, allv["bit"].to_numpy(dtype="uint32"))
+    del allv, codes
+
     n = len(dates)
-    first = np.full(len(bm), -1, dtype="int8")
-    last = np.full(len(bm), -1, dtype="int8")
-    for i in range(n):
-        set_i = (bm >> i) & 1 == 1
-        first[(first < 0) & set_i] = i
-        last[set_i] = i
-    pres["first_idx"] = first
-    pres["last_idx"] = last
-    pres["n_present"] = np.array([int(x).bit_count() for x in bm], dtype="int8")
-    span = (last - first + 1).astype("int16")
-    # A contiguous run has exactly span bits set; anything else has a gap, which
-    # means the geocode was retired and later reissued.
-    pres["resurrected"] = (pres["n_present"].to_numpy().astype("int16") != span) & (first >= 0)
+    idx = np.arange(n, dtype="uint32")
+    present = ((bm[:, None] >> idx[None, :]) & np.uint32(1)).astype(bool)
+    first = np.where(present.any(axis=1), present.argmax(axis=1), -1).astype("int8")
+    last = np.where(present.any(axis=1),
+                    n - 1 - present[:, ::-1].argmax(axis=1), -1).astype("int8")
+    n_present = present.sum(axis=1).astype("int8")
+    span = (last.astype("int16") - first.astype("int16") + 1)
+    pres = pd.DataFrame({
+        "parcel_id": np.asarray(uniques),
+        "bitmap": bm,
+        "first_idx": first,
+        "last_idx": last,
+        "n_present": n_present,
+        # A contiguous run has exactly `span` bits set. Anything else has a gap,
+        # meaning the geocode was retired and later reissued by DOR -- which
+        # would otherwise read as a fresh parcel creation.
+        "resurrected": (n_present.astype("int16") != span) & (first >= 0),
+    })
     return pres
 
 
