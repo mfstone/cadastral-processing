@@ -29,6 +29,14 @@ section and quarter catches them all; the accounting identity
 (2002-2011), ``Shape_Area`` (2013-2014), ``GISAcres`` (2016+). ``TotalAcres`` is
 agricultural acreage only -- zero on 67.8% of 2006 parcels -- and using it would
 corrupt every fragmentation statistic.
+
+One vintage needs a geometry fallback. The 2004-07-16 export carries an
+``AREA`` column that is **entirely zero** (833,537 rows, maximum 0.0), while
+2005-02-01 has a sensible median of 13,865 m². Rather than special-case a date,
+:func:`_acres` reports how usable the attribute field is and the extractor
+falls back to computing area from geometry whenever it is degenerate -- a rule
+that catches the same failure in any vintage. That fallback is the only place in
+the pipeline that reads geometry.
 """
 
 from __future__ import annotations
@@ -63,6 +71,11 @@ EXTRACT_FIELDS = [
 ]
 
 
+# Below this share of strictly-positive values the attribute area field is
+# treated as unusable and geometry is read instead.
+MIN_USABLE_AREA_SHARE = 0.5
+
+
 def _acres(df: pd.DataFrame, res: dict) -> tuple[pd.Series, str]:
     """Parcel area in acres, from the era's own field.
 
@@ -78,6 +91,38 @@ def _acres(df: pd.DataFrame, res: dict) -> tuple[pd.Series, str]:
         a = pd.to_numeric(df[col], errors="coerce").astype("float64") * SQM_TO_ACRES
         return a, f"area_sqm:{col}"
     return pd.Series(np.nan, index=df.index, dtype="float64"), "unavailable"
+
+
+def _usable_share(a: pd.Series) -> float:
+    if len(a) == 0:
+        return 0.0
+    return float((a.fillna(0) > 0).mean())
+
+
+def _acres_from_geometry(snap: sources.Snapshot, n_expected: int) -> pd.Series:
+    """Compute parcel acres from geometry, for a vintage whose area field is dead.
+
+    Read in the same FID order as the attribute pass, so positional alignment
+    holds. The CRS is asserted to be projected metres (EPSG:32100 through 2020,
+    EPSG:6514 from 2021 -- both Montana State Plane in metres) rather than
+    assumed, because an unprojected area would be silently meaningless.
+    """
+    from pyproj import CRS
+
+    info = snap.info()
+    crs = CRS.from_user_input(info["crs"])
+    unit = (getattr(crs.axis_info[0], "unit_name", "") or "").lower()
+    if crs.is_geographic or unit not in ("metre", "meter", "metres", "meters"):
+        raise RuntimeError(f"{snap.date}: CRS {crs.name!r} is not projected metres; "
+                           "cannot derive acres from geometry")
+    gdf = snap.read(columns=[], read_geometry=True)
+    if len(gdf) != n_expected:
+        raise RuntimeError(f"{snap.date}: geometry pass returned {len(gdf):,} rows, "
+                           f"attribute pass had {n_expected:,}; cannot align positionally")
+    log.info("    area field degenerate -> derived acres from geometry (%s, %s)",
+             crs.name, f"{len(gdf):,} features")
+    return pd.Series(gdf.geometry.area.to_numpy() * SQM_TO_ACRES, index=range(len(gdf)),
+                     dtype="float64")
 
 
 def _hash64(s: pd.Series) -> pd.Series:
@@ -135,7 +180,14 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
         f"{snap.date}: accounting identity failed: {qa}")
 
     acres_all, acres_mech = _acres(df, res)
+    usable = _usable_share(acres_all)
+    if usable < MIN_USABLE_AREA_SHARE:
+        qa["area_field_usable_share"] = round(usable, 6)
+        qa["area_field_degenerate"] = acres_mech
+        acres_all = _acres_from_geometry(snap, len(df)).set_axis(df.index)
+        acres_mech = f"geometry_fallback(was {acres_mech})"
     qa["area_mechanism"] = acres_mech
+    qa["area_usable_share"] = round(_usable_share(acres_all), 6)
     # Rights-of-way and water: no assessment record, but real mapped acreage,
     # which the coverage model needs. Kept as an aggregate, never as parcels.
     qa["blank_pid_acres"] = float(np.nansum(acres_all.to_numpy()[blank]))
