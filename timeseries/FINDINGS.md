@@ -241,3 +241,38 @@ essentially a rectangle:
 | **50 m** | **24,833** | **158 KB** | **0.0015%** |
 | 100 m | 23,372 | 144 KB | 0.0039% |
 | 800 m | 21,359 | 132 KB | 0.3011% |
+
+## 13. The coverage gate reproduces MSL's own documented gaps
+
+MSL's 2006 metadata states: *"significant areas of private land are missing from
+Lincoln County, along with smaller areas of Madison, Sanders, Sweet Grass, and
+Stillwater counties."* The gate was built with no reference to that sentence —
+it compares each county against **its own** late-series plateau on acreage,
+populated quarter-sections and parcel count, and masks a county-year when two of
+three fail. It finds four of the five, in the right severity order:
+
+| county | MSL's wording | gate result | worst acreage vs own plateau |
+|---|---|---|---|
+| Lincoln | *"significant areas"* | masked 6 snapshots | **0.597** (2003-12-22) |
+| Sweet Grass | *"smaller areas"* | masked 6 snapshots | 0.814 |
+| Sanders | *"smaller areas"* | masked 2 snapshots | 0.879 |
+| Stillwater | *"smaller areas"* | masked 2 snapshots | 0.841 |
+| Madison | *"smaller areas"* | not masked | 0.909 — fails one indicator, not two |
+
+Madison sitting just above the floor, and therefore passing, is the right
+outcome for the mildest case on MSL's list.
+
+The gate also finds gaps MSL's metadata never mentions: **Park at 0.627**, nearly
+as severe as Lincoln, plus Jefferson (0.726) and Granite (0.750).
+
+**Every masked county-snapshot falls between 2003-12-22 and 2006-07-14.** The
+first snapshot in which all 56 counties clear the gate is **2007-01-23**, which
+bounds the coverage era independently of any metadata.
+
+A rate test needs a denominator. Under a bare 20% `first_mapping` ceiling, 535
+county-intervals were rejected and 61.3% of those had fewer than 25 creations —
+a county with 8 creations of which 4 are first-mapping scores 50% on noise.
+Requiring the coverage arrival to be *materially* large as well as proportionally
+large leaves 65 rejections, takes comparability from 64.0% to **94.0%**, and
+makes the gate track the era properly: **86.2%** of county-intervals comparable
+in 2003-2007 against **97.1%** from 2008.
