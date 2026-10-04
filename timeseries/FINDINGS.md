@@ -205,3 +205,39 @@ Flathead — exactly where parcels are created); 2012 and 2015 do not exist
 upstream either; `TotalAcres` is agricultural acreage only (zero on 67.8% of
 2006 parcels, though progressively populated to 2.3% by 2025); aggregate-only
 publication with no owner names and no parcel geometry.
+
+## 12. The locator: no download needed, and the vote must be gated
+
+`PLSSTownship` ships **inside** the 2018 and 2019 cadastral geodatabases — 4,191
+features, EPSG:32100 — so the authoritative survey geometry was already on disk
+and MSL's 525 MB `MT_PLSS_SHP.zip` was never needed.
+
+Two keys, because they answer different questions: the **analytic** key is
+county + township code (4,675 units, so county rollups reconcile exactly), and
+the **display** key is the PLSS township polygon (4,191). The crosswalk between
+them is a majority vote over all 29 snapshots — 25.1 M votes, median dominant
+share **1.0**, minority votes **0.066%**, and 4,622 of 4,675 units resolved at
+≥99% dominance.
+
+**The vote has to be restricted to township/range keys that exist in the
+survey.** Without that gate, ten units resolved to impossible keys — range
+`545E`, `365E`, `275W`, township `75S`, none of which exist in Montana — each on
+a dominant share of only 0.51–0.55, because a corrupt attribute had outvoted a
+valid one by a hair. Gating the vote takes location from 99.786% to **100.000%**
+and rejects 7,058 votes for out-of-survey keys. Those votes are counted and
+reported, never silently dropped.
+
+Validation: the township polygons total **380,044 km²** against Montana's
+380,831 km² of land area, a 99.8% match.
+
+Published geometry is simplified at **50 m**, which is 0.5% of a township's
+9.6 km width and invisible at any dashboard zoom — these are survey lines, not
+physical features. The source carries ~125 vertices per township for what is
+essentially a rectangle:
+
+| tolerance | vertices | gzipped | area error |
+|---|---|---|---|
+| none | 525,985 | 2,193 KB | — |
+| **50 m** | **24,833** | **158 KB** | **0.0015%** |
+| 100 m | 23,372 | 144 KB | 0.0039% |
+| 800 m | 21,359 | 132 KB | 0.3011% |
