@@ -65,7 +65,7 @@ EXTRACT_FIELDS = [
     "owner_state", "owner_city", "owner_citystatezip", "mail_state", "mail_city",
     "gis_acres", "area_sqm",
     "subdivision", "cert_survey", "property_type", "build_value",
-    "owner_class", "owner_gen_descrip",
+    "owner_class", "owner_gen_descrip", "res_prop_ind",
     "situs_city", "situs_citystatezip",
     "trs", "township", "plss_range", "plss_section",
 ]
@@ -74,6 +74,12 @@ EXTRACT_FIELDS = [
 # Below this share of strictly-positive values the attribute area field is
 # treated as unusable and geometry is read instead.
 MIN_USABLE_AREA_SHARE = 0.5
+# A numeric field whose strictly-positive share falls below this is treated as
+# dead for the vintage rather than as a measurement of zero. The 2009-07-05
+# export carries all three value columns entirely zero across 908,662 rows
+# while its neighbours sit at 46-47%, so computing improved = (value > 0) there
+# would publish a spurious 0%-improved snapshot.
+MIN_DEGENERATE_SHARE = 0.01
 
 
 def _acres(df: pd.DataFrame, res: dict) -> tuple[pd.Series, str]:
@@ -206,7 +212,7 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
 
     for logical, name in (("subdivision", "subdivision"), ("cert_survey", "cert_survey"),
                           ("property_type", "property_type"), ("situs_city", "situs_city"),
-                          ("owner_class", "owner_class"),
+                          ("owner_class", "owner_class"), ("res_prop_ind", "res_prop_ind"),
                           ("owner_gen_descrip", "owner_gen_descrip")):
         col = res.get(logical)
         v[name] = (_first_str(df.loc[valid, col].astype("string").str.strip())
@@ -219,6 +225,10 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
     bv_col = res.get("build_value")
     v["build_value"] = (pd.to_numeric(df.loc[valid, bv_col], errors="coerce").astype("float64")
                         if bv_col and bv_col in df.columns else np.nan)
+    bv_share = _usable_share(v["build_value"])
+    qa["build_value_column"] = bv_col
+    qa["build_value_usable_share"] = round(bv_share, 6)
+    qa["improvement_available"] = bool(bv_col) and bv_share >= MIN_DEGENERATE_SHARE
 
     # ---- collapse the exploded parts to one row per parcel
     grouped = v.groupby("parcel_id", sort=False)
@@ -235,7 +245,8 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
                   "n_names_on_record", "owner_name_2_present",
                   "owner_is_entity", "owner_state",
                   "owner_state_valid", "owner_in_state", "subdivision", "cert_survey",
-                  "property_type", "situs_city", "owner_class", "owner_gen_descrip"]
+                  "property_type", "situs_city", "owner_class", "owner_gen_descrip",
+                  "res_prop_ind"]
     for c in first_cols:
         agg[c] = (c, "first")
     parcels = grouped.agg(**agg)
@@ -253,7 +264,14 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
 
     parcels["snapshot"] = snap.date
     parcels["owner_hash"] = _hash64(parcels["owner_name_norm"])
-    parcels["improved"] = (parcels["build_value"].fillna(0) > 0).to_numpy(dtype=bool)
+    # int8 with -1 = unknown, so a dead value block reads as "no data" rather
+    # than as "nothing is improved".
+    if qa["improvement_available"]:
+        parcels["improved"] = (parcels["build_value"].fillna(0) > 0).astype("int8")
+    else:
+        parcels["improved"] = np.int8(-1)
+        log.info("    improvement value unavailable (usable share %.4f) -> improved = -1",
+                 bv_share)
 
     # Narrow dtypes; no nullable dtypes anywhere, sentinels instead.
     parcels["county_n"] = pd.to_numeric(parcels["county"], errors="coerce").fillna(-1).astype("int8")

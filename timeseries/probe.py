@@ -54,8 +54,9 @@ PROBE_FIELDS = [
     "owner_state", "owner_city", "owner_citystatezip", "mail_state", "mail_city",
     "area_sqm", "gis_acres", "total_acres",
     "trs", "township", "plss_range", "plss_section",
-    "subdivision", "cert_survey", "build_value",
+    "subdivision", "cert_survey", "build_value", "property_type",
     "owner_class", "owner_gen_descrip", "owner_class_code",
+    "res_prop_ind", "res_com",
     "tax_year", "rec_year", "card_no",
     "situs_city", "situs_citystatezip",
 ]
