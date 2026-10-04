@@ -30,13 +30,59 @@ FIELD_ALIASES: dict[str, list[str]] = {
     "owner_city": ["OwnerCity", "MAILCITY", "OWNERCITY"],
     "owner_state": ["OwnerState", "OWNERSTATE"],
     "owner_zip": ["OwnerZipCode", "OwnerZipCo", "OWNERZIP"],
-    "owner_citystatezip": ["MAILCITY_S", "CityStateZ"],
+    # MAILCITY_S only. "CityStateZ"/"CityStateZip" is the *site* address per MSL
+    # metadata, not the owner's mailing address -- see situs_citystatezip. Mixing
+    # them would conflate where the land is with where the owner is, which is the
+    # one distinction the out-of-state analysis depends on. (Unconsumed by the
+    # consolidation pipeline, so narrowing it changes no existing behaviour.)
+    "owner_citystatezip": ["MAILCITY_S"],
     "care_of": ["CareOfTaxpayer", "CareOfTaxp"],
     "dba_name": ["DbaName", "DBANAME"],
     "owner_class": ["OWNCLASS", "OwnClass"],          # historical only
     "property_type": ["PropType", "PROPTYPE"],
-    "total_acres": ["TotalAcres", "TOTALACRES"],
+    "total_acres": ["TotalAcres", "TOTALACRES", "TOT_ACRES"],  # agricultural acres; see area_sqm
     "gis_acres": ["GISAcres", "GISACRES"],
+    # --- added for the longitudinal (timeseries) pipeline -------------------
+    # Field names vary by CONTAINER, not by year: 2021-2025 ship the truncated
+    # shapefile names and the full geodatabase names in the same zip. Candidate
+    # order below is therefore "full name first, truncated next, 2002-2011 last".
+    "county_code_alpha": ["COUNTYCODE"],          # 2002 only: 2-letter abbrev
+    "county_abbr": ["CountyAbbr"],                # 2020+
+    "mail_city": ["MAIL_CITY"],                   # 2002 only
+    "mail_state": ["MAIL_STATE"],                 # 2002 only
+    "mail_zip": ["MAIL_ZIP"],                     # 2002 only
+    # Parcel AREA in square metres. NOT the same thing as total_acres, which
+    # MSL documents as agricultural acreage only (2006 median: 0.0).
+    "area_sqm": ["AREA", "Shape_Area", "SHAPE_Area"],
+    "subdivision": ["Subdivision", "SUBDIVISIO", "Subdivisio"],
+    "legal_desc": ["LegalDescriptionShort", "LegalDescr", "SHT_LEG_DS"],
+    "cert_survey": ["CertificateOfSurvey", "Certificat"],
+    "trs": ["TRS"],                               # 2002-2011, concat "T2SR9WS4"
+    "township": ["Township"],                     # 2013+
+    "plss_range": ["Range"],                      # 2013+
+    "plss_section": ["Section", "Section_"],       # Section_ is a 2016 typo
+    "build_value": ["TotalBuildingValue", "TotalBuild", "TOT_FB_VAL"],
+    "land_value": ["TotalLandValue", "TotalLandV", "TOT_FL_VAL"],
+    "total_value": ["TotalValue", "VALUE_MRF"],
+    "owner_class_code": ["OWNCLSCD"],             # 2002-2011
+    "owner_gen_descrip": ["GENDESCRIP"],          # 2002-2011
+    "res_com": ["RESCOM"],                        # 2002-2011
+    "res_prop_ind": ["RESPROPIND"],               # 2004-2011
+    "prop_access": ["PropAccess", "ACCESS"],
+    "tax_year": ["TaxYear"],                      # 2013+
+    "rec_year": ["RECYR"],                        # 2003-2011, "Cur"/"Fut"
+    "property_id": ["PropertyID"],                # 2013+, ORION key
+    "assessment_code": ["AssessmentCode", "Assessment"],
+    # Parcel SITUS (site) address -- where the land is, not where the owner is.
+    "situs_number": ["PROP_NUM"],
+    "situs_street": ["PROP_ST"],
+    "situs_city": ["PROP_CITY"],
+    "situs_zip": ["PROP_ZIP"],
+    "situs_addr_1": ["AddressLine1", "AddressLin"],
+    "situs_addr_2": ["AddressLine2", "AddressL_1"],
+    "situs_citystatezip": ["CityStateZip", "CityStateZ"],
+    "card_no": ["CARD_NO"],                       # 2002, makes multi-card visible
+    "living_units": ["LIV_UNITS"],
 }
 
 # logical fields the pipeline cannot run without

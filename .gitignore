@@ -4,3 +4,7 @@ orion_work/
 orion_cache/
 __pycache__/
 *.pyc
+
+# probe/extract outputs are reproducible from the archives; the report is not
+data/probe/*.json
+data/probe/*.log
