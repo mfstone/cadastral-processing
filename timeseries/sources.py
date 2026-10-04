@@ -13,20 +13,33 @@ have to know about:
 * **layer name** -- ``OwnerParcel`` -> ``Montana_OwnerParcels_20221231`` ->
   ``OwnerParcel_20251231``.
 
-Nothing is ever extracted: GDAL reads both container kinds in place through
-``/vsizip/``. Since geometry is never requested, a statewide attribute read is
-~6 s for a geodatabase and tens of seconds for an era-A shapefile (fixed-width
-DBFs around 1.3 GB, which must be inflated whole).
+Reading strategy differs by container, and the difference is not cosmetic.
+
+**Shapefiles read in place through ``/vsizip/``** -- the DBF is one member read
+start to finish, so inflating it on the fly costs nothing. A statewide era-A
+attribute read is 16-35 s.
+
+**Geodatabases must be staged to local disk first.** A ``.gdb`` is a directory
+of many members and the driver seeks across them, which ``/vsizip/`` can only
+serve by re-inflating the deflate stream from its last checkpoint. Measured on
+the 2017 vintage: 78 GB of logical reads against a 539 MB dataset, 2.66 GB/s of
+re-inflation with zero additional disk traffic, and no sign of finishing after
+ten minutes. :meth:`Snapshot.local` unpacks the ``.gdb`` to scratch, which turns
+the same read into seconds. Use it for every read; it is a no-op for
+shapefiles.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime as _dt
 import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import zipfile
 
 import pyogrio
@@ -34,6 +47,8 @@ import pyogrio
 log = logging.getLogger("timeseries.sources")
 
 DEFAULT_ROOT = "/media/mstone/Extreme SSD/Cadastral"
+# Scratch for staged geodatabases; one at a time, ~0.5 GB each.
+STAGE_DIR = os.environ.get("CADASTRAL_STAGE_DIR", "data/_stage")
 ZIP_RE = re.compile(r"^Cadastral(\d{8})\.zip$", re.IGNORECASE)
 
 # 2002 lacks the five most populous counties -- Silver Bow, Yellowstone,
@@ -97,6 +112,32 @@ class Snapshot:
     def list_layers(self) -> list[str]:
         return [str(row[0]) for row in pyogrio.list_layers(self.vsi)]
 
+    @contextlib.contextmanager
+    def local(self, workdir: str | None = None):
+        """Yield a snapshot whose path is cheap to read, cleaning up after.
+
+        A no-op for shapefiles. For geodatabases, unpacks just this ``.gdb``
+        subtree to scratch and yields a clone pointing at it -- see the module
+        docstring for why reading a GDB through ``/vsizip/`` does not work.
+        """
+        if self.container != "gdb":
+            yield self
+            return
+        workdir = workdir or STAGE_DIR
+        os.makedirs(workdir, exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix=f"cad_{self.date}_", dir=workdir)
+        try:
+            prefix = self.inner_path.rstrip("/") + "/"
+            with zipfile.ZipFile(self.zip_path) as zf:
+                members = [n for n in zf.namelist() if n.startswith(prefix)]
+                if not members:
+                    raise RuntimeError(f"{self.zip_path}: nothing under {prefix!r}")
+                log.info("    staging %d .gdb members to scratch", len(members))
+                zf.extractall(tmp, members)
+            yield dataclasses.replace(self, vsi=os.path.join(tmp, self.inner_path))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 def _pick_parcel_layer(vsi_gdb: str) -> str:
     """Choose the parcel feature class from a geodatabase.
@@ -136,6 +177,8 @@ def _resolve_one(zip_path: str, date: str, prefer: str = "gdb") -> Snapshot:
         raise RuntimeError(f"{zip_path}: no .shp and no .gdb")
 
     vsi = f"/vsizip/{zip_path}/{inner}"
+    # Layer discovery touches only the GDB catalogue, which is small enough to
+    # read through /vsizip/ even though a full attribute scan is not.
     layer = _pick_parcel_layer(vsi) if container == "gdb" else None
     excluded = date in EXCLUDED_SNAPSHOTS
     return Snapshot(

@@ -9,3 +9,4 @@ __pycache__/
 data/probe/*.json
 data/probe/*.log
 data/snapshots/
+data/_stage/

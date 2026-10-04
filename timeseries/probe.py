@@ -523,7 +523,13 @@ def _q5_area_and_state(df: pd.DataFrame, res: dict, parcel_mask=None) -> dict:
 
 # ------------------------------------------------------------------ per-snap
 def probe_snapshot(snap: sources.Snapshot) -> dict:
+    """Probe one snapshot, staging the container first where that is needed."""
     t0 = time.time()
+    with snap.local() as src:
+        return _probe_open(src, snap, t0)
+
+
+def _probe_open(snap: sources.Snapshot, orig: sources.Snapshot, t0: float) -> dict:
     info = snap.info()
     columns = list(info.get("fields", []))
     res = resolve_columns(columns)
@@ -535,7 +541,8 @@ def probe_snapshot(snap: sources.Snapshot) -> dict:
 
     rec: dict = {
         "date": snap.date, "era": snap.era, "container": snap.container,
-        "layer": snap.layer, "vsi": snap.vsi, "zip_bytes": snap.zip_bytes,
+        "layer": snap.layer, "vsi": orig.vsi, "zip_bytes": orig.zip_bytes,
+        "staged": snap.vsi != orig.vsi,
         "excluded": snap.excluded, "exclude_reason": snap.exclude_reason,
         "read_seconds": round(t_read, 1),
         "crs": str(info.get("crs")), "geometry_type": str(info.get("geometry_type")),

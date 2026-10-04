@@ -94,7 +94,17 @@ def _first_str(series: pd.Series) -> pd.Series:
 
 
 def extract_snapshot(snap: sources.Snapshot, out_dir: str = OUT_DIR) -> dict:
-    """Read one snapshot and write its parcel and interest tables."""
+    """Read one snapshot and write its parcel and interest tables.
+
+    Staged through :meth:`sources.Snapshot.local`, which is a no-op for
+    shapefiles and unpacks the subtree for geodatabases -- reading a ``.gdb``
+    through ``/vsizip/`` thrashes the deflate stream and does not finish.
+    """
+    with snap.local() as src:
+        return _extract_open(src, snap, out_dir)
+
+
+def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) -> dict:
     info = snap.info()
     columns = list(info.get("fields", []))
     res = resolve_columns(columns)
@@ -114,6 +124,7 @@ def extract_snapshot(snap: sources.Snapshot, out_dir: str = OUT_DIR) -> dict:
     qa = {
         "date": snap.date, "era": snap.era, "container": snap.container,
         "layer": snap.layer, "crs": str(info.get("crs")),
+        "staged": snap.vsi != orig.vsi,
         "rows": int(len(df)), "blank": int(blank.sum()),
         "quarantined": int(quarantined.sum()), "valid_rows": int(valid.sum()),
         "quarantined_top": {str(k): int(v) for k, v in
