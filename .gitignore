@@ -8,3 +8,4 @@ __pycache__/
 # probe/extract outputs are reproducible from the archives; the report is not
 data/probe/*.json
 data/probe/*.log
+data/snapshots/
