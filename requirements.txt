@@ -1,0 +1,13 @@
+# Core geospatial + data stack for the cadastral consolidation tool
+geopandas>=1.0
+pyogrio>=0.8        # fast vector IO + attribute `where` filtering
+shapely>=2.0       # make_valid, representative_point, vectorized predicates
+pandas>=2.0
+numpy>=1.24
+
+# Optional: review-queue near-duplicate name clustering (never used to auto-merge)
+rapidfuzz>=3.0
+
+# Phase 2 (ORION SQL enrichment) — not required for the MVP:
+# pyodbc>=5.0
+# SQLAlchemy>=2.0

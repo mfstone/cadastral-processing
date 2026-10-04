@@ -1,0 +1,6 @@
+.venv/
+data/
+orion_work/
+orion_cache/
+__pycache__/
+*.pyc

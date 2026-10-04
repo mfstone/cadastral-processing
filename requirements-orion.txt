@@ -1,0 +1,5 @@
+# Phase 2 ORION ETL dependencies (in addition to requirements.txt).
+# System prereqs (NOT pip): Docker, and an MS SQL Server container to attach the
+# ORION Output.mdf. pymssql bundles FreeTDS so no system ODBC driver is needed.
+pymssql>=2.3
+pyarrow>=15
