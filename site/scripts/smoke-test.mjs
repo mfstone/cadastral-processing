@@ -23,7 +23,8 @@ const DATA = [
   'twp_locality.parquet', 'twp_size.parquet', 'twp_flow.parquet',
   'county_stock.parquet', 'county_flow.parquet', 'county_owner_state.parquet',
   'absorption.parquet', 'size_histogram.parquet', 'dormant.parquet',
-  'owner_state/CA.parquet',
+  'owner_state/CA.parquet', 'reservation_stock.parquet',
+  'reservations.geojson', 'publiclands.geojson',
 ];
 
 console.log(`\nsmoke: ${BASE}\n`);
@@ -142,6 +143,60 @@ await new Promise((r) => setTimeout(r, 1800));
 const cm = await page.evaluate(() =>
   document.querySelectorAll('#panel .card svg').length);
 ok('county level renders', cm > 0, `svgs=${cm}`);
+
+// ---- 4. actual parcels, the deep-zoom surface
+await page.select('#level', 'township');
+await new Promise((r) => setTimeout(r, 1200));
+
+// The tiles are stored UNCOMPRESSED on purpose: GDAL's COMPRESS=YES writes gzip
+// bytes needing a Content-Encoding that `astro preview` does not apply, so the
+// map would work on one origin and fail on the other for no visible reason.
+const tileRes = await fetch(`${BASE}/data/parcels/12/735/1432.pbf`);
+const tileBuf = new Uint8Array(await tileRes.arrayBuffer());
+ok('parcel tile serves', tileRes.ok && tileBuf.length > 0, `status ${tileRes.status}`);
+ok('parcel tile is NOT gzipped on disk',
+  !(tileBuf[0] === 0x1f && tileBuf[1] === 0x8b),
+  'a gzip magic number here means it needs a Content-Encoding the preview will not send');
+
+await page.evaluate(() => window.__map.map.jumpTo({ center: [-111.035, 45.68], zoom: 12.6 }));
+await new Promise((r) => setTimeout(r, 7000));
+const pc = await page.evaluate(() =>
+  window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] }).length);
+ok('parcels render at z12', pc > 500, `${pc} features`);
+
+const legendMode = await page.evaluate(() => document.getElementById('legend').dataset.mode);
+ok('legend switches to the parcel key at depth', legendMode === 'parcel', legendMode);
+
+const popup = await page.evaluate(() => {
+  const f = window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] })[0];
+  if (!f) return null;
+  window.__map.onParcel(f.properties);
+  const b = document.getElementById('parcelinfo');
+  return b.hidden ? null : b.innerText;
+});
+ok('clicking a parcel names its geocode', !!popup && /\d{17}/.test(popup),
+  (popup || 'no popup').slice(0, 60));
+ok('parcel popup publishes no owner information',
+  !!popup && /No owner information/.test(popup));
+
+await page.evaluate(() => window.__map.map.jumpTo({ center: [-110.0, 46.9], zoom: 6.2 }));
+await new Promise((r) => setTimeout(r, 2500));
+const pc0 = await page.evaluate(() =>
+  window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] }).length);
+ok('parcels are absent at statewide zoom', pc0 === 0, `${pc0} features`);
+
+// ---- 5. reference overlays, lazily fetched
+for (const kind of ['reservations', 'publiclands']) {
+  await page.click(`#lyr-${kind}`);
+  await new Promise((r) => setTimeout(r, kind === 'publiclands' ? 9000 : 3000));
+  const on = await page.evaluate((k) => !!window.__map.map.getLayer(`ov-${k}-fill`), kind);
+  ok(`${kind} overlay loads on demand`, on);
+  await page.click(`#lyr-${kind}`);
+  await new Promise((r) => setTimeout(r, 800));
+  const vis = await page.evaluate((k) =>
+    window.__map.map.getLayoutProperty(`ov-${k}-fill`, 'visibility'), kind);
+  ok(`${kind} overlay toggles off`, vis === 'none', String(vis));
+}
 
 ok('no console errors', errors.length === 0, errors.slice(0, 4).join(' | '));
 

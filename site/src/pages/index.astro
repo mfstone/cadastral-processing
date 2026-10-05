@@ -77,6 +77,17 @@ import '../styles/viz.css';
       <div id="mapwrap">
         <div id="map"></div>
         <div id="legend"></div>
+        <details id="layers" open>
+          <summary>Layers</summary>
+          <label><input type="checkbox" id="lyr-parcels" checked /> Parcels <span class="hint">(above z10)</span></label>
+          <label><input type="checkbox" id="lyr-townships" checked /> Township grid</label>
+          <label><input type="checkbox" id="lyr-counties" checked /> County boundaries</label>
+          <hr />
+          <label><input type="checkbox" id="lyr-reservations" /> <span style="border-bottom:2px solid var(--cat-2)">Reservations</span></label>
+          <label><input type="checkbox" id="lyr-publiclands" /> Public lands <span class="hint">(1.1 MB)</span></label>
+          <div id="lyr-status" class="hint"></div>
+        </details>
+        <div id="parcelinfo" hidden></div>
       </div>
       <div id="panel"></div>
     </main>

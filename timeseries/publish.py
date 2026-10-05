@@ -238,7 +238,8 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
         files[name] = _write(d, os.path.join(out_dir, f"{name}.parquet"))
 
     # ---- geometry
-    for g in ("townships.geojson", "counties.geojson"):
+    for g in ("townships.geojson", "counties.geojson",
+              "reservations.geojson", "publiclands.geojson"):
         src = os.path.join(LOC_DIR, g)
         if os.path.exists(src):
             shutil.copy(src, os.path.join(out_dir, g))

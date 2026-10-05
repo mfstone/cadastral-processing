@@ -1,0 +1,290 @@
+"""Stage 8: bake the parcel fabric into a vector-tile pyramid.
+
+The township surface answers "how much" well and "where" badly: a PLSS township
+is 36 square miles, so a subdivision of forty lots and a single ranch going to
+forty lots read as the same cell. Publishing the parcels themselves was measured
+rather than assumed, and it fits:
+
+| | measured |
+|---|--:|
+| parcels in the newest snapshot | 887,124 |
+| geometry vertices | 40,019,133 |
+| tiles, z10-12 over the Montana bbox | **11,599** |
+| tiles on disk, uncompressed | **321 MB**, mean 8 KB |
+| heaviest single tile (Billings z11) | 6.1 MB raw, **1.0 MB on the wire** |
+| tiles over 1 MB raw | 35 of 11,599 |
+
+Three numbers decided the shape of this stage.
+
+**z13 is impossible, so z12 is the floor.** A full pyramid to z13 needs 57,270
+tiles over Montana and Cloudflare Pages caps a deployment at 20,000 files.
+``MAXZOOM=12`` with ``extent`` left at GDAL's 4096 keeps the geometry sharper
+than the screen at z12 anyway -- the tile grid stops, the rendering does not.
+
+**z6-9 are worse than useless.** At statewide zoom every parcel in Montana lands
+in a handful of tiles, 1.8 MB each, to draw a grey smear. They are generated and
+then deleted: the source ``minzoom`` is 10 and the township choropleth owns every
+zoom below that, which is the view where an aggregate is the honest answer.
+
+**Tiles are stored decompressed.** GDAL's MVT driver gzips tile bodies by
+default, which requires a ``Content-Encoding: gzip`` response header. Cloudflare
+Pages can be told to send one through ``_headers``; ``astro preview`` cannot, so
+the map worked in production and failed locally for no visible reason -- the
+inverse of the usual trap and harder to find for it. Decompressing on disk costs
+2.8x the bytes at rest and nothing on the wire, since both origins compress
+``application/octet-stream`` in transit anyway -- the dense metro tiles are the
+only ones where that matters and they are a tenth of their disk size gzipped.
+
+**What is on the tile is a deliberate change of posture.** The plan specified
+"aggregate-only publication with no owner names and no parcel geometry"; this
+stage publishes parcel geometry and the geocode. The geocode is the DOR's own
+public key -- it is what the state's Cadastral application searches on -- and the
+boundary is already published by MSL. No owner name, mailing address, city or
+value reaches a tile: the attributes are the geocode plus seven small derived
+codes, and the popup says so. MCA 2-6-1017 concerns distribution lists, which
+this is not, and the non-disclosure that matters is kept by what is withheld, not
+by withholding the map.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import logging
+import os
+import shutil
+import subprocess
+import time
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+
+from . import geocode as gc
+from . import locality
+from . import ownerclass as oc
+from . import sources
+
+log = logging.getLogger("timeseries.tiles")
+
+SNAP_DIR = "data/snapshots"
+EVENT_DIR = "data/events"
+PL_DIR = "data/publiclands"
+RES_DIR = "data/reservations"
+OUT_DIR = "site/public/data/parcels"
+WORK_DIR = "data/_tiles"
+
+MINZOOM = 10          # below this the township choropleth is the honest view
+MAXZOOM = 12          # z13 would need 57,270 tiles against a 20,000-file cap
+GENERATE_FROM = 6     # GDAL insists on building down; 6-9 are deleted after
+FILE_CAP = 20_000     # Cloudflare Pages deployment limit
+
+# Attribute defaults, applied where a parcel has geometry but no fact row. The
+# fallbacks are the *least* interesting value in each case, so a join miss can
+# never invent a finding: undeveloped, unknown vintage, private, most-distant
+# owner locality.
+DEFAULTS = (("dev", 0), ("born", -1), ("ac", 0.0), ("ten", 2), ("loc", 4),
+            ("res", 0), ("cnd", 0))
+
+
+def build_source(date: str, path: str) -> gpd.GeoDataFrame:
+    """Join the newest snapshot's geometry to its derived facts.
+
+    One geometry read of one snapshot -- the fabric is published as it stands
+    today, with ``born`` carrying each parcel's first appearance so the time
+    dimension survives without 30 copies of the geometry.
+    """
+    snap = next(s for s in sources.discover() if s.date == date)
+    t0 = time.time()
+    with snap.local() as src:
+        g = gpd.read_file(src.vsi, columns=["PARCELID"], engine="pyogrio")
+    g["pid"] = gc.normalize(g["PARCELID"])
+    g = g[(g["pid"] != "") & gc.validity(g["pid"])].copy()
+    log.info("geometry: %s parcels in %.0fs", f"{len(g):,}", time.time() - t0)
+
+    p = pd.read_parquet(
+        f"{SNAP_DIR}/parcels_{date}.parquet",
+        # situs_city is read for locality, not published: city_county_map and
+        # classify both require it to tell a local owner from an absentee one.
+        columns=["parcel_id", "improved", "has_house_number", "acres",
+                 "owner_city", "situs_city", "owner_state", "county_n",
+                 "owner_name_norm", "is_condo"])
+    pres = pd.read_parquet(f"{EVENT_DIR}/presence.parquet",
+                           columns=["parcel_id", "first_idx"])
+    pl = pd.read_parquet(f"{PL_DIR}/public_{date}.parquet",
+                         columns=["parcel_id", "on_public_land"])
+    rs = pd.read_parquet(f"{RES_DIR}/res_{date}.parquet",
+                         columns=["parcel_id", "in_reservation", "off_res_trust"])
+    p = (p.merge(pres, on="parcel_id", how="left")
+          .merge(pl, on="parcel_id", how="left")
+          .merge(rs, on="parcel_id", how="left"))
+    for c in ("on_public_land", "in_reservation", "off_res_trust"):
+        p[c] = p[c].fillna(False)
+
+    loc = locality.classify(p, locality.city_county_map([p]))
+    cls, _ = oc.classify(p["owner_name_norm"])
+    cls, _ = oc.refine_tribal(cls, p["owner_name_norm"], p["in_reservation"],
+                              p["off_res_trust"], p["on_public_land"])
+    ten = oc.tenure(cls, p["on_public_land"])
+
+    # The development ladder, with -1 preserved: 2009-07-05's value block is
+    # dead, so "no improvement recorded" and "field unavailable" must not
+    # collapse into the same code (FINDINGS section 8).
+    imp = p["improved"].fillna(-1).to_numpy()
+    dev = np.where(imp == 1, 2,
+                   np.where(p["has_house_number"].fillna(False), 1, 0)).astype("int8")
+    dev[imp == -1] = -1
+
+    attrs = pd.DataFrame({
+        "parcel_id": p["parcel_id"],
+        "dev": dev,                                            # 0 platted 1 addressed 2 built
+        "born": p["first_idx"].fillna(-1).astype("int16"),      # snapshot index first seen
+        "ac": p["acres"].fillna(0).round(1).astype("float32"),
+        "ten": ten.astype("int8"),                              # 0 public 1 tribal 2 private
+        "loc": loc.astype("int8"),                              # absentee gradient 0-4
+        "res": p["in_reservation"].astype("int8"),
+        "cnd": p["is_condo"].fillna(False).astype("int8"),
+    })
+    m = g[["pid", "geometry"]].merge(attrs, left_on="pid", right_on="parcel_id",
+                                     how="left")
+    for col, val in DEFAULTS:
+        m[col] = m[col].fillna(val)
+    m = m.drop(columns=["parcel_id"]).rename(columns={"pid": "id"}).to_crs(4326)
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    m.to_file(path, driver="FlatGeobuf")
+    log.info("source %s: %.0f MB, %s features", path,
+             os.path.getsize(path) / 1e6, f"{len(m):,}")
+    return m
+
+
+def tile(src_path: str, out_dir: str) -> None:
+    """Run GDAL's MVT driver over the staged source."""
+    if os.path.isdir(out_dir):
+        shutil.rmtree(out_dir)
+    t0 = time.time()
+    cmd = ["ogr2ogr", "-f", "MVT", out_dir, src_path,
+           "-dsco", f"MINZOOM={GENERATE_FROM}", "-dsco", f"MAXZOOM={MAXZOOM}",
+           "-dsco", "MAX_SIZE=2000000", "-dsco", "MAX_FEATURES=400000",
+           "-dsco", "COMPRESS=NO", "-nln", "parcels"]
+    subprocess.run(cmd, check=True)
+    log.info("tiled in %.0f min", (time.time() - t0) / 60)
+
+
+def trim_low_zooms(out_dir: str, below: int = MINZOOM) -> int:
+    """Delete the statewide zooms, which cost megabytes to draw a smear."""
+    freed = 0
+    for z in range(0, below):
+        d = f"{out_dir}/{z}"
+        if not os.path.isdir(d):
+            continue
+        for root, _, files in os.walk(d):
+            freed += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+        shutil.rmtree(d)
+    log.info("trimmed z0-%d, freed %.0f MB", below - 1, freed / 1e6)
+    return freed
+
+
+def decompress(out_dir: str) -> int:
+    """Rewrite any gzipped tile body in place.
+
+    ``COMPRESS=NO`` should make this a no-op, but older GDAL builds honour it
+    only partly, and a gzip magic number here is invisible until the map renders
+    empty against a server that sends no ``Content-Encoding``.
+    """
+    n = 0
+    for root, _, files in os.walk(out_dir):
+        for f in files:
+            if not f.endswith(".pbf"):
+                continue
+            fp = os.path.join(root, f)
+            with open(fp, "rb") as fh:
+                head = fh.read(2)
+                if head != b"\x1f\x8b":
+                    continue
+                fh.seek(0)
+                body = gzip.decompress(fh.read())
+            with open(fp, "wb") as fh:
+                fh.write(body)
+            n += 1
+    if n:
+        log.info("decompressed %s gzipped tiles in place", f"{n:,}")
+    return n
+
+
+def audit(out_dir: str) -> dict:
+    """Count and size the pyramid, and assert it can actually be deployed."""
+    per_zoom: dict[int, dict] = {}
+    for root, _, files in os.walk(out_dir):
+        for f in files:
+            if not f.endswith(".pbf"):
+                continue
+            z = int(os.path.relpath(root, out_dir).split(os.sep)[0])
+            e = per_zoom.setdefault(z, {"tiles": 0, "bytes": 0, "max_bytes": 0})
+            b = os.path.getsize(os.path.join(root, f))
+            e["tiles"] += 1
+            e["bytes"] += b
+            e["max_bytes"] = max(e["max_bytes"], b)
+    tiles = sum(e["tiles"] for e in per_zoom.values())
+    total = sum(e["bytes"] for e in per_zoom.values())
+    gz = sum(1 for root, _, fs in os.walk(out_dir) for f in fs
+             if f.endswith(".pbf")
+             and open(os.path.join(root, f), "rb").read(2) == b"\x1f\x8b")
+
+    assert tiles <= FILE_CAP, (
+        f"{tiles:,} tiles exceeds the {FILE_CAP:,}-file Cloudflare Pages cap; "
+        f"lower MAXZOOM or raise MINZOOM")
+    assert gz == 0, f"{gz} tiles are still gzipped on disk"
+    assert min(per_zoom) >= MINZOOM, (
+        f"z{min(per_zoom)} survived the trim; the source declares minzoom "
+        f"{MINZOOM} and anything below it ships bytes nothing requests")
+
+    for z in sorted(per_zoom):
+        e = per_zoom[z]
+        log.info("  z%-2d %6s tiles  %6.0f MB  mean %5.1f KB  max %5.0f KB", z,
+                 f"{e['tiles']:,}", e["bytes"] / 1e6,
+                 e["bytes"] / e["tiles"] / 1024, e["max_bytes"] / 1024)
+    log.info("pyramid: %s tiles, %.0f MB, %.0f%% of the file cap",
+             f"{tiles:,}", total / 1e6, 100 * tiles / FILE_CAP)
+    return {"tiles": tiles, "bytes": total,
+            "per_zoom": {str(k): v for k, v in sorted(per_zoom.items())},
+            "minzoom": MINZOOM, "maxzoom": MAXZOOM}
+
+
+def build(date: str | None = None, out_dir: str = OUT_DIR,
+          reuse_source: bool = False) -> dict:
+    if date is None:
+        date = max(s.date for s in sources.discover())
+    src_path = f"{WORK_DIR}/parcels_{date}.fgb"
+    if reuse_source and os.path.exists(src_path):
+        log.info("reusing staged source %s", src_path)
+    else:
+        build_source(date, src_path)
+    tile(src_path, out_dir)
+    trim_low_zooms(out_dir)
+    decompress(out_dir)
+    qa = audit(out_dir)
+    qa["date"] = date
+    with open(f"{out_dir}/tiles_qa.json", "w") as fh:
+        json.dump(qa, fh, indent=1)
+    return qa
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Stage 8: bake the parcel fabric into vector tiles")
+    ap.add_argument("--date", default=None, help="snapshot date (default: newest)")
+    ap.add_argument("--out", default=OUT_DIR)
+    ap.add_argument("--reuse-source", action="store_true",
+                    help="skip the geometry read if the staged .fgb exists")
+    args = ap.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
+                        datefmt="%H:%M:%S")
+    build(args.date, args.out, reuse_source=args.reuse_source)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

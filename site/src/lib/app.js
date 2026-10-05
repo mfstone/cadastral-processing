@@ -112,14 +112,43 @@ function paintFrom(c, ids, fn, { diverging = false, maskFn = null } = {}) {
     legend(ramp, fmtShort(arr[0] ?? 0), fmtShort(arr[arr.length - 1] ?? 0), false);
   }
   S.map.paint(colors);
+  applyParcelStyle();
 }
 const cssVar = C.cssVar;
 const fmtShort = (v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
   : Math.abs(v) >= 1e3 ? `${(v / 1e3).toFixed(0)}k`
   : Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
 
+/** Parcel-scale legend: at deep zoom the surface IS the parcels, so the
+ *  township metric's ramp is no longer what the reader is looking at. */
+function parcelLegendHTML() {
+  const items = PARCEL_LEGEND[S.view] || [];
+  if (!items.length) return '';
+  return `<div class="title">Parcels &mdash; ${VIEWS[S.view].parcelLegend || 'colour key'}</div>`
+    + items.map(([label, tok]) =>
+        `<div class="pl"><i style="background:${cssVar('--' + tok)}"></i>${label}</div>`).join('')
+    + '<div class="note">Attributes are the 2026 state; outline marks parcels '
+    + 'created in the selected interval.</div>';
+}
+
+function refreshLegendForZoom() {
+  if (!S.map) return;
+  const l = $('legend');
+  const parcelScale = S.map.zoom >= 10.5 && $('lyr-parcels')?.checked;
+  if (parcelScale) {
+    const html = parcelLegendHTML();
+    if (html) { l.innerHTML = html; l.dataset.mode = 'parcel'; return; }
+  }
+  if (l.dataset.mode === 'parcel') { l.dataset.mode = ''; render(); }
+}
+
 function legend(ramp, lo, hi, diverging, reason) {
   const l = $('legend');
+  if (S.map && S.map.zoom >= 10.5 && $('lyr-parcels')?.checked) {
+    const html = parcelLegendHTML();
+    if (html) { l.innerHTML = html; l.dataset.mode = 'parcel'; return; }
+  }
+  l.dataset.mode = '';
   // A blank surface must name its own cause. "Coverage mask" is the wrong
   // explanation when the vintage's field is simply dead.
   const why = reason
@@ -158,11 +187,76 @@ function unavailableCard(panel, field) {
   return c;
 }
 
+/* ------------------------------------------------------------------ parcels */
+/**
+ * Data-driven paint for the actual-parcel layer, one expression per view.
+ *
+ * Attributes are baked into the tiles, so this is a pure styling decision with
+ * no data fetch: `dev` ladder stage, `ten` tenure, `loc` absentee tier, `ac`
+ * acres, `born` the snapshot index at which the parcel first appears.
+ *
+ * `born` is used to HIGHLIGHT parcels created in the selected interval, not to
+ * reconstruct the historical fabric. The tiles carry today's parcels, so a
+ * parcel split in 2010 appears as its children at every date; hiding the
+ * children would leave a hole where the parent was rather than showing the
+ * parent. Highlighting what is new is honest; pretending to rewind is not.
+ */
+function parcelStyle() {
+  const ord3 = C.ramp('ord3', 3);
+  const ord5 = C.ramp('ord5', 5);
+  const masked = cssVar('--masked');
+  const iv = S.dim.intervals[Math.min(S.dim.intervals.length - 1, Math.max(0, S.snap - 1))];
+  const bornHere = iv ? ['==', ['get', 'born'], iv.b] : ['==', ['get', 'born'], -999];
+
+  switch (S.view) {
+    case 'ladder':
+      return [['match', ['get', 'dev'], 0, ord3[0], 1, ord3[1], 2, ord3[2], masked], bornHere];
+    case 'ownership': {
+      const by = S.measure === 'acres' ? 'loc' : 'ten';
+      if (by === 'ten') {
+        return [['match', ['get', 'ten'],
+          0, cssVar('--cat-1'), 1, cssVar('--cat-2'), 2, cssVar('--cat-3'), masked], null];
+      }
+      return [['match', ['get', 'loc'],
+        0, ord3[0], 1, ord3[0], 2, ord3[1], 3, ord3[2], masked], null];
+    }
+    case 'fragmentation':
+      return [['step', ['get', 'ac'],
+        ord5[0], 5, ord5[1], 40, ord5[2], 160, ord5[3], 640, ord5[4]], null];
+    case 'churn':
+      return [['match', ['get', 'ten'],
+        0, masked, 1, masked, 2, ord3[1], masked], bornHere];
+    case 'thresholds':
+      // The 20-acre statutory line, drawn on the parcels themselves.
+      return [['step', ['get', 'ac'],
+        ord5[0], 20, cssVar('--cat-2'), 40, ord5[2], 160, ord5[4]], bornHere];
+    default:
+      return [ord5[2], null];
+  }
+}
+
+const PARCEL_LEGEND = {
+  ladder: [['platted only', 'ord3-1'], ['addressed', 'ord3-2'], ['built', 'ord3-3']],
+  ownership: [['public domain', 'cat-1'], ['tribal trust', 'cat-2'], ['private', 'cat-3']],
+  fragmentation: [['<5 ac', 'ord5-1'], ['5-40', 'ord5-2'], ['40-160', 'ord5-3'],
+                  ['160-640', 'ord5-4'], ['>640', 'ord5-5']],
+  churn: [['private parcel', 'ord3-2']],
+  thresholds: [['under 20 ac', 'ord5-1'], ['20-40 ac (above the DEQ line)', 'cat-2'],
+               ['40-160', 'ord5-3'], ['over 160', 'ord5-5']],
+};
+
+function applyParcelStyle() {
+  if (!S.map) return;
+  const [color, hl] = parcelStyle();
+  S.map.setParcelPaint(color, hl);
+}
+
 /* -------------------------------------------------------------------- views */
 const VIEWS = {};
 
 /* 1. Development ladder -- Tier 1.1 */
 VIEWS.ladder = {
+  parcelLegend: 'development stage',
   label: 'Development',
   legend: 'Share of parcels addressed but unbuilt',
   async render(panel) {
@@ -303,6 +397,7 @@ async function dormantCard(panel) {
 
 /* 2. Ownership -- Tier 1.2 and 1.3 */
 VIEWS.ownership = {
+  parcelLegend: 'tenure',
   label: 'Ownership',
   legend: 'Out-of-state share of parcels',
   async render(panel) {
@@ -438,6 +533,7 @@ async function originRankCard(panel) {
 
 /* 3. Fragmentation -- Tier 1.5 and Tier 2.6 */
 VIEWS.fragmentation = {
+  parcelLegend: 'parcel size',
   label: 'Fragmentation',
   legend: 'Share of acreage in parcels under 40 acres',
   async render(panel) {
@@ -493,6 +589,7 @@ VIEWS.fragmentation = {
 
 /* 4. Churn -- Tier 2.7, 2.8, 2.9 */
 VIEWS.churn = {
+  parcelLegend: 'private parcels',
   label: 'Churn',
   legend: 'Owner change, % of persisting parcels per year',
   async render(panel) {
@@ -518,6 +615,7 @@ VIEWS.churn = {
       colors.set(fid, vals.has(u) ? ramp[Math.min(7, classify(vals.get(u), breaks))] : cssVar('--masked'));
     }
     S.map.paint(colors);
+    applyParcelStyle();
     const arr = [...vals.values()].sort((a, b) => a - b);
     legend(ramp, C.fmtPct(arr[0] ?? 0), C.fmtPct(arr[arr.length - 1] ?? 0), false);
 
@@ -560,6 +658,7 @@ VIEWS.churn = {
 
 /* 5. Regulatory thresholds -- Tier 1.4 */
 VIEWS.thresholds = {
+  parcelLegend: 'size against the 20-acre line',
   label: 'Thresholds',
   legend: 'New lots per 1,000 parcels per year',
   async render(panel) {
@@ -585,6 +684,7 @@ VIEWS.thresholds = {
       colors.set(fid, vals.has(u) ? ramp[Math.min(7, classify(vals.get(u), breaks))] : cssVar('--masked'));
     }
     S.map.paint(colors);
+    applyParcelStyle();
     const arr = [...vals.values()].sort((a, b) => a - b);
     legend(ramp, fmtShort(arr[0] ?? 0), fmtShort(arr[arr.length - 1] ?? 0), false);
 
@@ -725,6 +825,37 @@ function buildControls() {
   }
   origin.addEventListener('change', (e) => { S.originState = e.target.value; render(); });
 
+  // --- layer list ------------------------------------------------------
+  const status = $('lyr-status');
+  $('lyr-parcels').addEventListener('change', (e) => S.map.setParcelsVisible(e.target.checked));
+  $('lyr-townships').addEventListener('change', (e) => {
+    const v = e.target.checked ? 'visible' : 'none';
+    for (const id of ['township-line']) {
+      if (S.map.map.getLayer(id)) S.map.map.setLayoutProperty(id, 'visibility', v);
+    }
+  });
+  $('lyr-counties').addEventListener('change', (e) => {
+    const v = e.target.checked ? 'visible' : 'none';
+    if (S.map.map.getLayer('county-line')) S.map.map.setLayoutProperty('county-line', 'visibility', v);
+  });
+  for (const [kind, file, label] of [
+    ['reservations', 'reservations.geojson', 'reservations'],
+    ['publiclands', 'publiclands.geojson', 'public lands'],
+  ]) {
+    $(`lyr-${kind}`).addEventListener('change', async (e) => {
+      if (!e.target.checked) { S.map.setOverlay(kind, false); return; }
+      status.textContent = `loading ${label}\u2026`;
+      try {
+        await S.map.addOverlay(kind, `data/${file}`);
+        S.map.setOverlay(kind, true);
+        status.textContent = '';
+      } catch (err) {
+        status.textContent = `${label} unavailable`;
+        e.target.checked = false;
+      }
+    });
+  }
+
   $('clearsel').addEventListener('click', () => {
     S.selection.clear(); S.map.setSelection(new Set()); render();
   });
@@ -756,6 +887,31 @@ export async function boot() {
     + `comparable series from ${meta.comparable_series_begins}`;
 
   S.map = new UnitMap('map', {
+    onParcel: (props) => {
+      const box = $('parcelinfo');
+      const L = S.dim.labels;
+      const born = Number(props.born);
+      const bornTxt = born >= 0 && born < S.dim.snapshots.length
+        ? (born === 0 ? `present in ${S.dim.snapshots[0].date} (or earlier)`
+                      : `first seen ${S.dim.snapshots[born].date}`)
+        : 'unknown';
+      const rows = [
+        ['acres', Number(props.ac).toLocaleString(undefined, { maximumFractionDigits: 1 })],
+        ['stage', L.dev_stage[Number(props.dev)] ? L.dev_stage[Number(props.dev)].replace(/_/g, ' ') : 'unknown'],
+        ['tenure', (L.tenure[Number(props.ten)] || '').replace('_', ' ')],
+        ['owner distance', L.locality[Number(props.loc)] || '-'],
+        ['created', bornTxt],
+      ];
+      if (Number(props.res)) rows.push(['', 'inside a reservation']);
+      if (Number(props.cnd)) rows.push(['', 'condominium unit']);
+      box.innerHTML = `<span class="x" id="pi-x">\u00d7</span>`
+        + `<div class="gc">${props.id}</div>`
+        + `<table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>`
+        + `<div class="hint" style="margin-top:5px;color:var(--ink-muted)">`
+        + `Geocode is the DOR parcel identifier. No owner information is published.</div>`;
+      box.hidden = false;
+      $('pi-x').addEventListener('click', () => { box.hidden = true; });
+    },
     onSelect: (level, id, props, additive) => {
       const u = level === 'county' ? Number(id) : (S.twpByKey.get(id)?.id ?? null);
       if (u == null) return;
@@ -766,7 +922,12 @@ export async function boot() {
     },
   });
   try {
-    await S.map.init({ townships, counties });
+    // Test handle: the smoke and screenshot suites drive the map through this.
+  window.__map = S.map;
+  window.__state = S;
+  await S.map.init({ townships, counties });
+  // The legend must follow the surface the reader is actually looking at.
+  S.map.map.on('zoomend', refreshLegendForZoom);
   } catch (err) {
     // The map failing must not take the charts with it.
     console.error('map init failed', err);

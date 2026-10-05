@@ -25,6 +25,15 @@
 /data/*
   Cache-Control: public, max-age=300, must-revalidate
 
+# Vector tiles. Stored UNCOMPRESSED on disk so the local preview and the
+# deployed origin behave identically -- GDAL's COMPRESS=YES writes gzip bytes
+# that need a matching Content-Encoding, which `astro preview` does not apply,
+# so the map worked in production and failed locally (or the reverse) for no
+# visible reason. Cloudflare compresses them on the wire anyway.
+/data/parcels/*
+  Content-Type: application/vnd.mapbox-vector-tile
+  Cache-Control: public, max-age=86400
+
 # Astro fingerprints everything under _astro/, so it is immutable.
 /_astro/*
   Cache-Control: public, max-age=31536000, immutable

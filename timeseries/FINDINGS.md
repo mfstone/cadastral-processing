@@ -203,8 +203,12 @@ The deduplicated parcel series is smooth and monotonic: 495,822 (2002) → 731,2
 2002 is excluded (missing Silver Bow, Yellowstone, Missoula, Gallatin and
 Flathead — exactly where parcels are created); 2012 and 2015 do not exist
 upstream either; `TotalAcres` is agricultural acreage only (zero on 67.8% of
-2006 parcels, though progressively populated to 2.3% by 2025); aggregate-only
-publication with no owner names and no parcel geometry.
+2006 parcels, though progressively populated to 2.3% by 2025).
+
+Aggregate-only publication is carried forward **for owner identity only** — no
+owner name, mailing address, city or value is published anywhere. The "no parcel
+geometry" half was abandoned deliberately once the township surface was built and
+inspected; see section 16.
 
 ## 12. The locator: no download needed, and the vote must be gated
 
@@ -386,3 +390,72 @@ federal precision improving slightly to 0.9837.
 
 Tribal trust acreage inside reservations rises **4.72 M → 5.17 M (+449 k acres)**
 across 23 years, concentrated in Flathead (+199 k) and Blackfeet (+156 k).
+
+## 16. The township is too coarse to answer "where", so the parcels ship
+
+The plan's spatial frame was PLSS township, chosen for defensible reasons that
+all still hold — it comes free from the attributes in every era, it is the
+source's own grouping, it reconciles with counties, and "T1S R26E section 14" is
+a citation a title company can look up. What it cannot do is answer the question
+the dashboard exists to answer. A township is **36 square miles**. Forty new lots
+inside one 20-acre plat and forty scattered tracts across six sections produce
+the same cell value, and those are opposite land-use outcomes.
+
+This was only visible after building it. The choropleth was legible, correct,
+and useless at the scale a planning decision is actually made.
+
+So the parcel fabric is published as vector tiles, measured first:
+
+| | |
+|---|--:|
+| parcels, newest snapshot | 887,124 |
+| geometry vertices | 40,019,133 |
+| parcels under 1,000 m² | 24.4% |
+| tiles z10–12 over the Montana bbox | **11,599** |
+| on disk, uncompressed | 321 MB, mean 8 KB/tile |
+| heaviest tile (Billings z11) | 6.1 MB raw, **1.0 MB gzipped** |
+
+Three constraints fell out of the measurement, and each is enforced by an
+assertion in `tiles.audit()` rather than left to care:
+
+1. **z13 cannot be deployed.** It needs 57,270 tiles against Cloudflare Pages'
+   20,000-file cap. z12 at GDAL's default 4096 extent is already finer than the
+   screen, so the tile grid stops where the deployment does and the rendering is
+   unaffected.
+2. **z6–9 are generated and then deleted.** Every parcel in the state lands in a
+   handful of tiles — 1.8 MB apiece to draw a grey smear. The source declares
+   `minzoom: 10` and the township choropleth owns everything below, which is
+   precisely the zoom range where an aggregate *is* the honest answer. The two
+   surfaces now divide the work by what each can support.
+3. **Tiles are stored decompressed**, 2.8× the bytes at rest and none on the
+   wire. GDAL's MVT driver gzips bodies by default, needing a
+   `Content-Encoding: gzip` that `_headers` can supply in production and
+   `astro preview` cannot — so the map worked deployed and failed locally, the
+   inverse of the usual trap and harder to find for it. The smoke suite now
+   asserts the absence of a gzip magic number directly.
+
+### What is on a tile, and what is not
+
+The geocode plus seven derived codes: `dev` (the platted/addressed/built ladder,
+with −1 preserved for 2009's dead value block), `born` (snapshot index of first
+appearance, which is what keeps the time dimension without 30 copies of the
+geometry), `ac`, `ten`, `loc`, `res`, `cnd`.
+
+**No owner name, mailing address, city, or value reaches a tile**, and the parcel
+popup says so in as many words. The geocode is the DOR's own public key — it is
+what the state's Cadastral application searches on — and the boundary is already
+published by MSL. MCA 2-6-1017 bars using a state-prepared list of persons as a
+*distribution list*, which this is not and cannot become without the names.
+
+The non-disclosure that matters is kept by what is withheld. Withholding the map
+as well bought nothing, and cost the ability to answer the question.
+
+### Reference overlays
+
+Reservation boundaries and public lands render as recessive annotation —
+reservations as outlines, public lands as a desaturated wash — behind a
+collapsible layer list, both off-by-default and lazily fetched. They exist
+because *neither is ownership*: a parcel inside a reservation may be fee land
+(section 15) and a parcel adjoining public land is not public. Showing them as
+analytical layers would invite exactly that misreading, so they are styled to sit
+beneath the data rather than compete with it.
