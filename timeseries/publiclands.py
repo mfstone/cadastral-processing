@@ -94,6 +94,60 @@ def load_polygons(zip_path: str = PL_ZIP):
     return gdf[["OWNER", "pl_class", "geometry"]]
 
 
+# The overlay is *reference*, not analysis. Nothing is measured off it: the
+# analytical public-land flag comes from `join_snapshot` below, a full-resolution
+# point-in-polygon against every one of the 31,091 source polygons. So reducing
+# the drawn layer cannot move a published number -- only the wash.
+#
+# What it must keep is the school-trust checkerboard. Sections 16 and 36 of each
+# township are state land, so ~9,000 of those polygons are a 640-acre grid that
+# is one of the most recognisable facts about Montana land tenure, and the
+# reason the dissolved layer carries 1,095,567 vertices in the first place.
+#
+# Measured, dissolved to 4 classes, at coordinate precision 4 (~11 m):
+#
+#   | filter   | simplify | vertices | raw     | wire    | acreage kept |
+#   |----------|---------:|---------:|--------:|--------:|-------------:|
+#   | none     |     none | 1,095,567|       - |       - |      100.00% |
+#   | >=40 ac  |     60 m |  213,810 | 5.22 MB | 0.89 MB |       99.66% |
+#   | >=40 ac  |    250 m |  162,198 | 3.99 MB | 0.69 MB |       99.66% |
+#   | >=40 ac  |    500 m |  121,372 | 3.03 MB | 0.56 MB |       99.66% |
+#
+# 60 m is chosen, not the cheaper rows: it is ~1 px at z10 and ~4.6 px at z12,
+# where the boundary sits beside crisp parcel edges and a visibly wrong edge
+# would cost more trust than 2 MB is worth. The layer is off by default, lazily
+# fetched, and measured at **1.7 s** from click to painted -- there is no load
+# problem here to solve. The 40-acre floor drops 46% of the polygons for 0.34%
+# of the acreage and leaves every school-trust section standing.
+OVERLAY_MIN_ACRES = 40.0
+OVERLAY_SIMPLIFY_M = 60.0
+OVERLAY_PRECISION = 4
+
+
+def export_overlay(polys, path: str) -> dict:
+    """Write the dissolved, simplified reference overlay."""
+    import geopandas as gpd
+
+    from cadastral.schema import SQM_TO_ACRES
+
+    keep = polys[(polys.geometry.area * SQM_TO_ACRES) >= OVERLAY_MIN_ACRES]
+    g = keep.dissolve(by="pl_class", as_index=False)[["pl_class", "geometry"]]
+    g["geometry"] = g.geometry.simplify(OVERLAY_SIMPLIFY_M, preserve_topology=True)
+    g = g.rename(columns={"pl_class": "cls"}).to_crs(4326)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if os.path.exists(path):
+        os.remove(path)
+    g.to_file(path, driver="GeoJSON", coordinate_precision=OVERLAY_PRECISION)
+    from shapely import get_num_coordinates
+    qa = {"features": len(g), "vertices": int(get_num_coordinates(g.geometry).sum()),
+          "bytes": os.path.getsize(path), "polygons_kept": int(len(keep)),
+          "polygons_source": int(len(polys))}
+    log.info("overlay %s: %d classes from %s of %s polygons, %s vertices, %.2f MB",
+             path, qa["features"], f"{len(keep):,}", f"{len(polys):,}",
+             f"{qa['vertices']:,}", qa["bytes"] / 1e6)
+    return qa
+
+
 def join_snapshot(snap: sources.Snapshot, polys) -> pd.DataFrame:
     """Representative point of each parcel against the public-land polygons."""
     import geopandas as gpd
@@ -128,11 +182,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=OUT_DIR)
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--overlay", default="data/locator/publiclands.geojson",
+                    help="where to write the map reference overlay")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     os.makedirs(args.out, exist_ok=True)
     polys = load_polygons(args.zip)
+    export_overlay(polys, args.overlay)
 
     snaps = sources.usable(sources.discover(args.root))
     if args.only:

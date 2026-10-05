@@ -165,7 +165,13 @@ def tile(src_path: str, out_dir: str) -> None:
     t0 = time.time()
     cmd = ["ogr2ogr", "-f", "MVT", out_dir, src_path,
            "-dsco", f"MINZOOM={GENERATE_FROM}", "-dsco", f"MAXZOOM={MAXZOOM}",
-           "-dsco", "MAX_SIZE=2000000", "-dsco", "MAX_FEATURES=400000",
+           # MAX_SIZE and MAX_FEATURES are *drop* thresholds, not warnings: GDAL
+           # silently discards features from any tile that exceeds them. At the
+           # defaults (500 KB / 200,000) the Billings z10 tile loses 38% of its
+           # parcels -- 19,572 survive of 51,971 -- and the map simply renders
+           # downtown as a hole. Both are set past the worst observed tile so
+           # nothing is dropped, and audit() verifies that afterwards.
+           "-dsco", "MAX_SIZE=20000000", "-dsco", "MAX_FEATURES=1000000",
            "-dsco", "COMPRESS=NO", "-nln", "parcels"]
     subprocess.run(cmd, check=True)
     log.info("tiled in %.0f min", (time.time() - t0) / 60)
@@ -210,6 +216,38 @@ def decompress(out_dir: str) -> int:
     if n:
         log.info("decompressed %s gzipped tiles in place", f"{n:,}")
     return n
+
+
+def _tile_features(path: str) -> int:
+    out = subprocess.run(["ogrinfo", "-ro", "-al", "-so", path],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.strip().lower().startswith("feature count"):
+            return int(line.split(":")[1])
+    return 0
+
+
+def check_no_dropped_features(out_dir: str, n_source: int) -> dict:
+    """Every parcel must appear in at least one tile at the deepest zoom.
+
+    This is the check that catches GDAL's MAX_SIZE/MAX_FEATURES dropping
+    features, which it does without failing and without a visible symptom
+    anywhere except a hole in the densest part of the map. Parcels straddling a
+    tile boundary are written to both tiles, so the deepest-zoom total is a lower
+    bound that must be *at least* the source count.
+    """
+    zdir = f"{out_dir}/{MAXZOOM}"
+    total = sum(_tile_features(os.path.join(root, f))
+                for root, _, files in os.walk(zdir) for f in files
+                if f.endswith(".pbf"))
+    ratio = total / n_source if n_source else 0.0
+    log.info("z%d carries %s feature instances for %s parcels (%.2fx)",
+             MAXZOOM, f"{total:,}", f"{n_source:,}", ratio)
+    assert total >= n_source, (
+        f"z{MAXZOOM} holds {total:,} features for {n_source:,} parcels -- GDAL "
+        f"dropped some; raise MAX_SIZE/MAX_FEATURES")
+    return {"z_max_feature_instances": total, "source_parcels": n_source,
+            "duplication": round(ratio, 3)}
 
 
 def audit(out_dir: str) -> dict:
@@ -258,12 +296,14 @@ def build(date: str | None = None, out_dir: str = OUT_DIR,
     src_path = f"{WORK_DIR}/parcels_{date}.fgb"
     if reuse_source and os.path.exists(src_path):
         log.info("reusing staged source %s", src_path)
+        n_source = _tile_features(src_path)
     else:
-        build_source(date, src_path)
+        n_source = len(build_source(date, src_path))
     tile(src_path, out_dir)
     trim_low_zooms(out_dir)
     decompress(out_dir)
     qa = audit(out_dir)
+    qa.update(check_no_dropped_features(out_dir, n_source))
     qa["date"] = date
     with open(f"{out_dir}/tiles_qa.json", "w") as fh:
         json.dump(qa, fh, indent=1)

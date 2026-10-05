@@ -66,6 +66,45 @@ def load_layers(zip_path: str = RES_ZIP):
     return res, off
 
 
+# The boundary overlay is annotation, drawn as an outline so a reader can see
+# that a cluster of tribal-trust parcels sits inside a reservation. It is never
+# measured off, so 100 m takes 43,392 source vertices to 2,304 -- a tenth of a
+# pixel at the zoom where the outline is 1 px wide. Acres are computed from the
+# *unsimplified* geometry, because they are quoted in the hover label.
+OVERLAY_SIMPLIFY_M = 100.0
+OVERLAY_PRECISION = 5
+
+
+def _title(s: pd.Series) -> pd.Series:
+    """Title-case without `str.title`, which renders ROCKY BOY'S as Rocky Boy'S."""
+    return s.str.split().apply(
+        lambda ws: " ".join(w[:1].upper() + w[1:].lower() for w in ws))
+
+
+def export_overlay(res, path: str) -> dict:
+    """Write the reservation boundary reference overlay."""
+    from cadastral.schema import SQM_TO_ACRES
+
+    g = res.copy()
+    g["acres"] = g.geometry.area * SQM_TO_ACRES
+    g["geometry"] = g.geometry.simplify(OVERLAY_SIMPLIFY_M, preserve_topology=True)
+    g["NAME"] = _title(g["NAME"])
+    g = (g.rename(columns={"NAME": "name", "TRIBE_NAME": "tribe"})
+          [["name", "tribe", "acres", "geometry"]].to_crs(4326))
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if os.path.exists(path):
+        os.remove(path)
+    g.to_file(path, driver="GeoJSON", coordinate_precision=OVERLAY_PRECISION)
+    from shapely import get_num_coordinates
+    qa = {"features": len(g), "acres": float(g["acres"].sum()),
+          "vertices": int(get_num_coordinates(g.geometry).sum()),
+          "bytes": os.path.getsize(path)}
+    log.info("overlay %s: %d reservations, %.2fM acres, %s vertices, %.2f MB",
+             path, qa["features"], qa["acres"] / 1e6, f"{qa['vertices']:,}",
+             qa["bytes"] / 1e6)
+    return qa
+
+
 def join_snapshot(snap: sources.Snapshot, res, off) -> pd.DataFrame:
     import geopandas as gpd
 
@@ -100,11 +139,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=OUT_DIR)
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--overlay", default="data/locator/reservations.geojson",
+                    help="where to write the map reference overlay")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     os.makedirs(args.out, exist_ok=True)
     res, off = load_layers(args.zip)
+    export_overlay(res, args.overlay)
 
     snaps = sources.usable(sources.discover(args.root))
     if args.only:
