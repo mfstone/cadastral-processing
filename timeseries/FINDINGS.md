@@ -276,3 +276,37 @@ Requiring the coverage arrival to be *materially* large as well as proportionall
 large leaves 65 rejections, takes comparability from 64.0% to **94.0%**, and
 makes the gate track the era properly: **86.2%** of county-intervals comparable
 in 2003-2007 against **97.1%** from 2008.
+
+## 14. A third degenerate field, caught by a plausibility rule
+
+Agricultural-use acreage is a **subset of the parcel**, so it cannot exceed the
+parcel's own area. The 2003 and 2004 exports violate that by two orders of
+magnitude — statewide totals of **735 M and 781 M acres against a mapped
+86–87 M**, with a single parcel carrying 642,980 ag acres against a maximum of
+3,841 from 2005 onward. The column names are identical across the series; only
+the values are wrong, so no schema check would have found it.
+
+Clamping each parcel's agricultural acreage to its own area repairs the broken
+vintages and the ordinary baseline alike:
+
+| vintage | raw | clamped | mapped parcel acres |
+|---|--:|--:|--:|
+| 2003-12-22 | 734.94 M | **54.27 M** | 86.09 M |
+| 2004-07-16 | 781.48 M | 54.57 M | 87.10 M |
+| 2005-02-01 | 55.20 M | 54.87 M | 91.43 M |
+| 2026-09-04 | 67.87 M | 67.61 M | 90.62 M |
+
+The series becomes continuous — 54.27 → 54.87 → … → 67.61 M — where before it
+opened with a 735 M spike. The residual ~1% of parcels whose ag record exceeds
+their mapped polygon from 2005 on is ordinary assessor-versus-GIS mismatch, and
+the clamp handles it by the same rule.
+
+**2009-07-05 fails separately**: its agricultural block is 0.99% populated
+against ~35% elsewhere, so that vintage is reported as *unavailable* rather than
+as a collapse to 1.21 M acres. That is the same export whose value block is dead
+(§8) — a single bad export, failing in three places.
+
+The general lesson is that the earlier degeneracy rule only caught fields that
+were *empty*. A field can also be *impossibly large*, and the check that catches
+it is a relationship the data must satisfy — here, that a part cannot exceed its
+whole — rather than a threshold on the field alone.

@@ -59,6 +59,26 @@ TOP_STATES = ["CA", "WA", "TX", "CO", "FL", "AZ", "ID", "UT", "WY"]
 UNASSIGNED = "UNASSIGNED"
 
 
+def _ag_acres(df: pd.DataFrame) -> tuple[pd.Series, bool]:
+    """Agricultural acreage, clamped to the parcel, with a per-vintage gate.
+
+    Agricultural-use acreage is a SUBSET of the parcel, so it cannot exceed the
+    parcel's own area. The 2003 and 2004 exports violate that spectacularly --
+    one parcel carries 642,980 ag acres, and the statewide totals are 735 M and
+    781 M against a mapped 86-87 M -- while from 2005 the violation rate settles
+    at about 1%, which is ordinary assessor-versus-GIS mismatch. Clamping each
+    parcel to its own area repairs the broken vintages and the baseline alike:
+    2003 goes from 734.94 M to 54.27 M, against 2005's 54.87 M.
+
+    The gate is separate: the 2009-07-05 export has a dead agricultural block
+    (0.99% of parcels populated against ~35% elsewhere), so its acreage is
+    reported as unavailable rather than as a collapse to near zero.
+    """
+    clamped = pd.concat([df["ag_acres"], df["acres"]], axis=1).min(axis=1)
+    populated = float((df["ag_acres"] > 0).mean())
+    return clamped, populated >= 0.05
+
+
 def _dev_stage(df):
     """The development ladder, recomputed from its era-stable inputs.
 
@@ -137,6 +157,10 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
             "owner_state", "improved", "is_condo", "owner_is_entity", "subdivision",
             "owner_city", "situs_city", "owner_name_norm", "dev_stage", "is_ag",
             "ag_acres", "has_situs_addr", "has_house_number"])
+        ag_clamped, ag_ok = _ag_acres(df)
+        if not ag_ok:
+            log.warning("  %s: agricultural block is dead (%.2f%% populated); "
+                        "reported as unavailable", date, 100 * float((df["ag_acres"] > 0).mean()))
         loc_code = locality.classify(df, city_county)
         cls_code, _rule = oc.classify(df["owner_name_norm"])
         ag_biz = oc.ag_business_name(df["owner_name_norm"])
@@ -168,8 +192,8 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
             "loc": loc_code,
             "oc": cls_code,
             "dev": _dev_stage(df),   # derived, see _dev_stage
-            "is_ag": df["is_ag"].to_numpy(dtype=bool),
-            "ag_acres": df["ag_acres"].astype("float64"),
+            "is_ag": (ag_clamped > 0).to_numpy(dtype=bool),
+            "ag_acres": ag_clamped.astype("float64"),
             "ag_biz": ag_biz,
             "is_public": oc.is_public(cls_code),
             "on_public_land": onpl,
@@ -194,6 +218,7 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
                 n_improve_unknown=("improved", lambda s: int((s == -1).sum())),
                 n_on_public_land=("on_public_land", "sum"),
                 n_ag=("is_ag", "sum"), ag_acres=("ag_acres", "sum"),
+                ag_available=("is_ag", lambda _s: int(ag_ok)),
                 n_ag_business=("ag_biz", "sum"), n_public=("is_public", "sum"),
                 n_with_addr=("has_addr", "sum"), n_with_house_number=("has_num", "sum"),
                 acres_public=("acres", lambda s: 0.0),

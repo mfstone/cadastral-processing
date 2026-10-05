@@ -268,7 +268,14 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
                if k.startswith("ag_") and res.get(k) and res[k] in df.columns]
     if ag_cols:
         ag = sum(pd.to_numeric(df.loc[valid, c], errors="coerce").fillna(0.0) for c in ag_cols)
-        v["ag_acres"] = ag.astype("float32")
+        # Agricultural acreage is a subset of the parcel and cannot exceed it.
+        # The 2003 and 2004 exports violate that by two orders of magnitude --
+        # 735 M and 781 M statewide acres against a mapped 86-87 M, with one
+        # parcel carrying 642,980 -- so each parcel is clamped to its own area.
+        qa["ag_raw_total"] = float(ag.sum())
+        qa["ag_implausible_rows"] = int((ag > v["acres"] * 1.05 + 1).sum())
+        v["ag_acres"] = pd.concat([ag, v["acres"]], axis=1).min(axis=1).astype("float32")
+        qa["ag_clamped_total"] = float(v["ag_acres"].sum())
     else:
         v["ag_acres"] = np.float32(0.0)
     qa["ag_columns"] = ag_cols

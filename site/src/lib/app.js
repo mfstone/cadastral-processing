@@ -384,10 +384,18 @@ VIEWS.fragmentation = {
     });
 
     const { c: ag } = await activeStock('ag');
+    // The 2009-07-05 export has a dead agricultural block, so that snapshot is
+    // a gap in the line rather than a plunge to near zero.
+    const agSeries = seriesOf(ag, 'ag_acres', units);
+    const avail = seriesOf(ag, 'ag_available', units);
+    const nUnitsSel = units ? units.length : ag.nUnits;
+    for (let i = 0; i < agSeries.length; i++) {
+      if (!(avail[i] > nUnitsSel * 0.5)) agSeries[i] = NaN;
+    }
     const card2 = C.card(panel, 'Agricultural-use acreage',
-      'Parcels carrying any agricultural-use acreage. A cleaner indicator than PropType, which is coded inconsistently across counties.');
+      'Parcels carrying any agricultural-use acreage — a cleaner indicator than PropType, which is coded inconsistently across counties. Acreage is clamped to each parcel\u2019s own area, since agricultural use is a subset of the parcel; without that the 2003 and 2004 exports report 735M and 781M acres against a mapped 86M.');
     C.lineChart(card2, {
-      series: [seriesOf(ag, 'ag_acres', units)], labels: ['agricultural acres'],
+      series: [agSeries], labels: ['agricultural acres'],
       colors: [cssVar('--cat-3')], xLabels: snapLabels(), fmt: C.fmtAc,
       caption: 'Agricultural-use acreage',
     });

@@ -62,7 +62,7 @@ TOPICS = {
     "size": [f"n_sz{i}" for i in range(8)] + [f"ac_sz{i}" for i in range(8)],
     "class": [f"n_oc{i}" for i in range(oc.N_CLASSES)],
     "owner_origin": [f"n_st{i}" for i in range(12)],
-    "ag": ["n_ag", "ag_acres", "n_ag_business"],
+    "ag": ["n_ag", "ag_acres", "n_ag_business", "ag_available"],
     "improve": ["n_improved", "n_unimproved", "n_improve_unknown",
                 "n_with_addr", "n_with_house_number"],
 }
