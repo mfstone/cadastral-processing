@@ -22,24 +22,29 @@ between name tokens and legal form is not stationary -- single-member LLCs
 carrying family names are a 2010s phenomenon -- and there are no labels after
 2011 against which to check the drift.
 
-Measured on 2006 (662,394 labelled rows, 97.0% overall):
+Measured on 2006 (662,394 labelled rows, **98.4% overall**):
 
 ======================  =========  =========  ======
 class                   support    precision  recall
 ======================  =========  =========  ======
-federal                 59,665     0.84       0.94
+federal                 59,665     0.98       0.94
 state                   16,353     0.98       0.93
 local_government         8,690     0.81       0.81
-**tribal**              16,403     0.94       **0.40**
+tribal                  16,403     0.92       0.95
 private (all forms)    561,283     0.99       0.99
 ======================  =========  =========  ======
 
-**Tribal ownership cannot be detected from owner names and must not be reported
-as if it could.** Recall is 0.40 because tribal land is frequently titled to
-individual allottees or held in federal trust ("USA IN TRUST") rather than to a
-tribe by name. Fixing this needs reservation boundaries, not more patterns. Until
-then the tribal class is a floor, and its parcels largely fall into `individual`
-and `federal`.
+Getting tribal right depended on one ordering decision and one spelling. Land
+held by the United States in trust for a tribe is titled ``USA IN TRUST``, so
+the **tribal rule must precede the federal rule** or the federal pattern claims
+it: with federal first, tribal recall was 0.41 and federal precision 0.84;
+with tribal first they are 0.95 and 0.98. And the pattern stem is
+``RESERVATIO\w*`` rather than ``RESERVATION``, because era A truncates owner
+names at 30 characters and ``FORT BELKNAP INDIAN RESERVATIO`` is what actually
+appears.
+
+That bug was found by disagreement with the public-lands layer, not by reading
+the rules -- see :mod:`timeseries.publiclands`.
 
 Ranch and farm names are a separate problem: a working ranch is as often a sole
 proprietorship under a personal name as a registered company, so they are
@@ -62,6 +67,18 @@ PUBLIC_CLASSES = (0, 1, 2, 3)   # federal, state, local, tribal
 # Ordered (rule_id, class, pattern). First match wins; rule_id is published so a
 # classification can be traced to the exact rule that produced it.
 RULES: list[tuple[int, str, str]] = [
+    # Tribal BEFORE federal, and this ordering is the whole point: land held by
+    # the United States in trust for a tribe is titled "USA IN TRUST", which the
+    # federal rule would otherwise claim. Measured against 2006 OWNCLASS, a name
+    # containing "IN TRUST" is Tribal in 8,766 of 9,718 cases (90.2%), and
+    # OWNCLASS's own tribal parcels are named USA IN TRUST, U S A IN TRUST FOR
+    # CROW TRIBE, FORT PECK INDIAN RESERVATION and so on. Note "RESERVATIO"
+    # rather than "RESERVATION": era A truncates owner names at 30 characters,
+    # so FORT BELKNAP INDIAN RESERVATIO is what actually appears.
+    (20, "tribal", r"\b(?:TRIBE|TRIBES|TRIBAL|CONFEDERATED|ASSINIBOINE|SIOUX|"
+                   r"BLACKFEET|CROW NATION|NORTHERN CHEYENNE|SALISH|KOOTENAI|"
+                   r"CHIPPEWA|CREE|GROS VENTRE|FORT BELKNAP|FORT PECK|"
+                   r"IN TRUST|INDIAN ALLOTMENT|ALLOTMENT|RESERVATIO\w*)\b"),
     (10, "federal", r"\b(UNITED STATES|U S A|USA|US GOVERNMENT|USDA|USDI|"
                     r"FOREST SERVICE|US FOREST|NATIONAL FOREST|BUREAU OF LAND|"
                     r"BUREAU OF RECLAMATION|FISH (AND|&) WILDLIFE|NATIONAL PARK|"
@@ -69,23 +86,21 @@ RULES: list[tuple[int, str, str]] = [
                     r"DEPT OF DEFENSE|AIR FORCE|POSTAL SERVICE|BLM|BUREAU OF INDIAN|"
                     r"DEPARTMENT OF AGRICULTURE|DEPT OF AGRICULTURE|"
                     r"DEPARTMENT OF (?:THE )?INTERIOR|DEPT OF (?:THE )?INTERIOR)\b"),
-    (20, "tribal", r"\b(TRIBE|TRIBES|TRIBAL|CONFEDERATED|ASSINIBOINE|SIOUX|"
-                   r"BLACKFEET|CROW NATION|NORTHERN CHEYENNE|SALISH|KOOTENAI|"
-                   r"CHIPPEWA|CREE|GROS VENTRE|FORT BELKNAP|FORT PECK|"
-                   r"INDIAN RESERVATION|INDIAN ALLOTMENT|ALLOTMENT|RESERVATION)\b"),
     (30, "state", r"\b(STATE OF MONTANA|STATE OF MT|MT STATE TRUST|MONTANA STATE|STATE HIGHWAY|"
                   r"DEPARTMENT OF NATURAL RESOURCE|DEPT OF NATURAL RESOURCE|DNRC|"
                   r"MONTANA DEPARTMENT|MONTANA DEPT|MONTANA FISH|FISH WILDLIFE (AND|&) PARKS|"
                   r"BOARD OF REGENTS|UNIVERSITY OF MONTANA|MONTANA UNIVERSITY|"
                   r"MONTANA TECH|MONTANA ARMY NATIONAL|"
-                  r"(?:DEPT|DEPARTMENT) OF STATE LANDS|STATE LANDS)\b"),
+                  r"(?:DEPT|DEPARTMENT) OF STATE LANDS|STATE LANDS|"
+                  r"MONTANA HISTORICAL|MONTANA COLLEGE|ST MT DEPT|ST OF MT|STATE OF MT)\b"),
     (40, "local_government", r"\b(COUNTY OF|CITY OF|TOWN OF|SCHOOL DISTRICT|"
                              r"SCHOOL DIST|CONSOLIDATED SCHOOL|ELEMENTARY DISTRICT|"
                              r"HIGH SCHOOL DISTRICT|IRRIGATION DISTRICT|"
                              r"CONSERVATION DISTRICT|WATER (AND|&) SEWER|"
                              r"RURAL FIRE|FIRE DISTRICT|CEMETERY DISTRICT|"
                              r"HOSPITAL DISTRICT|PORT AUTHORITY|HOUSING AUTHORITY|"
-                             r"SILVER BOW|ANACONDA DEER LODGE)\b"),
+                             r"SILVER BOW|ANACONDA DEER LODGE|PUBLIC SCHOOLS|AIRPORT AUTHORITY|"
+                             r"SEWER DISTRICT|REFUSE DISTRICT|TV DISTRICT)\b"),
     # County names used bare, e.g. "FLATHEAD COUNTY", "LEWIS AND CLARK COUNTY".
     (41, "local_government", r"\bCOUNTY\b(?!.*\b(?:RANCH|FARM|LAND CO|LLC|INC)\b)"),
     (50, "institution", r"\b(CHURCH|CATHEDRAL|PARISH|DIOCESE|SYNOD|CONGREGATION|"
@@ -135,6 +150,33 @@ def classify(name_norm: pd.Series) -> tuple[np.ndarray, np.ndarray]:
 
 def is_public(cls: np.ndarray) -> np.ndarray:
     return np.isin(cls, PUBLIC_CLASSES)
+
+
+# ---------------------------------------------------------------------- tenure
+# The published ownership taxonomy needs three categories, not two, because the
+# two available sources answer different questions. The public-lands layer is
+# locational and authoritative for public *domain* but carries no trust land;
+# owner names are the only route to tribal trust. See timeseries.publiclands.
+TENURE = ["public_domain", "tribal_trust", "private"]
+N_TENURE = len(TENURE)
+
+
+def tenure(cls: np.ndarray, on_public_land: np.ndarray) -> np.ndarray:
+    """Combine the name-based class with the spatial public-land flag.
+
+    Precedence: tribal trust first, because ``USA IN TRUST`` is specific and the
+    public-lands layer cannot express it; then the spatial flag, which is
+    authoritative for public domain; then the name-based public classes as a
+    fallback for public parcels whose geometry falls outside a mapped polygon
+    (2,439 such parcels in 2026, including school districts and airport
+    authorities).
+    """
+    out = np.full(len(cls), TENURE.index("private"), dtype="int8")
+    name_public = is_public(cls)
+    out[np.asarray(on_public_land, dtype=bool)] = TENURE.index("public_domain")
+    out[name_public & ~np.asarray(on_public_land, dtype=bool)] = TENURE.index("public_domain")
+    out[cls == CLASS_IDX["tribal"]] = TENURE.index("tribal_trust")
+    return out
 
 
 # A working ranch is as often a sole proprietorship under a personal name as it

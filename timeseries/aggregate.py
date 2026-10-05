@@ -41,6 +41,7 @@ log = logging.getLogger("timeseries.aggregate")
 SNAP_DIR = "data/snapshots"
 EVENT_DIR = "data/events"
 COVER_DIR = "data/coverage"
+PL_DIR = "data/publiclands"
 LOC_DIR = "data/locator"
 OUT_DIR = "data/facts"
 
@@ -132,13 +133,24 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
     for path in sorted(glob.glob(os.path.join(snap_dir, "parcels_*.parquet"))):
         date = os.path.basename(path)[len("parcels_"):-len(".parquet")]
         df = pd.read_parquet(path, columns=[
-            "county", "twp_code", "section", "quarter", "county_n", "acres",
+            "parcel_id", "county", "twp_code", "section", "quarter", "county_n", "acres",
             "owner_state", "improved", "is_condo", "owner_is_entity", "subdivision",
             "owner_city", "situs_city", "owner_name_norm", "dev_stage", "is_ag",
             "ag_acres", "has_situs_addr", "has_house_number"])
         loc_code = locality.classify(df, city_county)
         cls_code, _rule = oc.classify(df["owner_name_norm"])
         ag_biz = oc.ag_business_name(df["owner_name_norm"])
+        # Spatial public-land flag: locational, independent of owner naming, and
+        # authoritative for public domain. See timeseries.publiclands.
+        pl_path = os.path.join(PL_DIR, f"public_{date}.parquet")
+        if os.path.exists(pl_path):
+            pl = pd.read_parquet(pl_path, columns=["parcel_id", "on_public_land"])
+            onpl = (df["parcel_id"].map(pl.set_index("parcel_id")["on_public_land"])
+                    .fillna(False).to_numpy(dtype=bool))
+        else:
+            onpl = np.zeros(len(df), dtype=bool)
+            log.warning("  no public-land join for %s; tenure falls back to names", date)
+        ten_code = oc.tenure(cls_code, onpl)
         unit = df["county"].fillna("") + df["twp_code"].fillna("")
         f = pd.DataFrame({
             "unit": unit,
@@ -160,6 +172,8 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
             "ag_acres": df["ag_acres"].astype("float64"),
             "ag_biz": ag_biz,
             "is_public": oc.is_public(cls_code),
+            "on_public_land": onpl,
+            "ten": ten_code,
             "has_addr": df["has_situs_addr"].to_numpy(dtype=bool),
             "has_num": df["has_house_number"].to_numpy(dtype=bool),
         })
@@ -178,6 +192,7 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
                 n_improved=("improved", lambda s: int((s == 1).sum())),
                 n_unimproved=("improved", lambda s: int((s == 0).sum())),
                 n_improve_unknown=("improved", lambda s: int((s == -1).sum())),
+                n_on_public_land=("on_public_land", "sum"),
                 n_ag=("is_ag", "sum"), ag_acres=("ag_acres", "sum"),
                 n_ag_business=("ag_biz", "sum"), n_public=("is_public", "sum"),
                 n_with_addr=("has_addr", "sum"), n_with_house_number=("has_num", "sum"),
@@ -185,7 +200,10 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
             )
             # Public/private acreage split: 13.2% of parcels hold 40.2% of the
             # acreage, so no acreage statistic is meaningful without it.
-            pubac = sub.groupby([key, "is_public"])["acres"].sum().unstack(fill_value=0.0)
+            # Combined tenure, not the name flag alone: public domain plus
+            # tribal trust against private.
+            is_pub_combined = sub["ten"] != oc.TENURE.index("private")
+            pubac = sub.assign(_p=is_pub_combined).groupby([key, "_p"])["acres"].sum().unstack(fill_value=0.0)
             base["acres_public"] = pubac.get(True, 0.0)
             base["acres_private"] = pubac.get(False, 0.0)
             szc = _counts(sub, key, "sz", 8, "n_sz")
@@ -200,6 +218,11 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
             loca = loca.reindex(columns=range(locality.N_LEVELS), fill_value=0.0)
             loca.columns = [f"ac_loc{i}" for i in range(locality.N_LEVELS)]
             occ = _counts(sub, key, "oc", oc.N_CLASSES, "n_oc")
+            tenc = _counts(sub, key, "ten", oc.N_TENURE, "n_ten")
+            tena = sub.pivot_table(index=key, columns="ten", values="acres",
+                                  aggfunc="sum", fill_value=0.0)
+            tena = tena.reindex(columns=range(oc.N_TENURE), fill_value=0.0)
+            tena.columns = [f"ac_ten{i}" for i in range(oc.N_TENURE)]
             devc = _counts(sub, key, "dev_idx", 4, "n_dev")
             deva = sub.pivot_table(index=key, columns="dev_idx", values="acres",
                                   aggfunc="sum", fill_value=0.0)
@@ -207,6 +230,7 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
             deva.columns = [f"ac_dev{i}" for i in range(4)]
             out = (base.join(szc).join(sza.astype("float32")).join(sbc)
                    .join(locc).join(loca.astype("float32")).join(occ)
+                   .join(tenc).join(tena.astype("float32"))
                    .join(devc).join(deva.astype("float32")).reset_index())
             out["snapshot"] = date
             sink.append(out)
@@ -354,6 +378,11 @@ def build(out_dir: str = OUT_DIR) -> dict:
           "size_labels": SIZE_LABELS,
           "locality_levels": locality.LEVELS,
           "owner_classes": oc.CLASSES,
+          "tenure": oc.TENURE,
+          "tenure_note": ("public_domain from the MTPublicLands spatial join with "
+                          "name-based fallback; tribal_trust from owner name only, "
+                          "since trust land is absent from the public-lands layer; "
+                          "the layer is a single 2026 vintage applied to all years"),
           "dev_stages": ["platted_only", "addressed_not_built", "built", "unknown"],
           "owner_class_calibration": oc.calibrate(
               pd.read_parquet(os.path.join(SNAP_DIR, "parcels_2006-07-14.parquet"),
