@@ -42,14 +42,14 @@ function cssv(name) {
 function mapLine() {
   const v = getComputedStyle(document.documentElement)
     .getPropertyValue('--map-line').trim();
-  return v || '#9a978f';
+  return v || '#a0967f';
 }
 
 /** The map's own ground, read from the theme so it does not stay light in dark mode. */
 function mapGround() {
   const v = getComputedStyle(document.documentElement)
     .getPropertyValue('--map-ground').trim();
-  return v || '#eceae4';
+  return v || '#ece5d5';
 }
 // OpenFreeMap serves the style JSON at the path itself -- appending
 // "/style.json" returns 404. Two styles so the basemap follows the theme.
@@ -125,7 +125,7 @@ export class UnitMap {
         id: `${id}-sel`, type: 'line', source: src,
         paint: {
           'line-color': getComputedStyle(document.documentElement)
-            .getPropertyValue('--ink-1').trim() || '#0b0b0b',
+            .getPropertyValue('--ink-1').trim() || '#1a1712',
           'line-width': 2.2,
           'line-opacity': ['case', ['boolean', ['feature-state', 'sel'], false], 1, 0],
         },
@@ -148,7 +148,8 @@ export class UnitMap {
       id: 'parcel-fill', type: 'fill', source: 'parcels', 'source-layer': 'parcels_mt',
       minzoom: 10,
       paint: {
-        'fill-color': '#9ec5f4',
+        'fill-color': getComputedStyle(document.documentElement)
+          .getPropertyValue('--ord5-2').trim() || '#b3774d',
         'fill-opacity': ['interpolate', ['linear'], ['zoom'], 10, 0.35, 11, 0.85],
       },
     });
@@ -371,12 +372,12 @@ export class UnitMap {
       this.map.setPaintProperty('bg', 'background-color', mapGround());
     }
     const line = getComputedStyle(document.documentElement)
-      .getPropertyValue('--map-line').trim() || '#9a978f';
+      .getPropertyValue('--map-line').trim() || '#a0967f';
     for (const id of ['township-line', 'county-line']) {
       if (this.map.getLayer(id)) this.map.setPaintProperty(id, 'line-color', line);
     }
     const sel = getComputedStyle(document.documentElement)
-      .getPropertyValue('--ink-1').trim() || '#0b0b0b';
+      .getPropertyValue('--ink-1').trim() || '#1a1712';
     for (const id of ['township-sel', 'county-sel']) {
       if (this.map.getLayer(id)) this.map.setPaintProperty(id, 'line-color', sel);
     }

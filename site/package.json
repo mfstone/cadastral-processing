@@ -13,7 +13,8 @@
     "preview": "astro preview --host 127.0.0.1",
     "data": "cd .. && .venv/bin/python -m timeseries.publish",
     "tiles": "cd .. && .venv/bin/python -m timeseries.tiles",
-    "test:smoke": "node scripts/smoke-test.mjs"
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "test:palette": "node scripts/palette-audit.mjs"
   },
   "dependencies": {
     "astro": "^5.6.1",

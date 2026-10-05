@@ -229,7 +229,7 @@ function parcelStyle() {
     case 'thresholds':
       // The 20-acre statutory line, drawn on the parcels themselves.
       return [['step', ['get', 'ac'],
-        ord5[0], 20, cssVar('--cat-2'), 40, ord5[2], 160, ord5[4]], bornHere];
+        ord5[0], 20, cssVar('--statute'), 40, ord5[2], 160, ord5[4]], bornHere];
     default:
       return [ord5[2], null];
   }
@@ -241,7 +241,7 @@ const PARCEL_LEGEND = {
   fragmentation: [['<5 ac', 'ord5-1'], ['5-40', 'ord5-2'], ['40-160', 'ord5-3'],
                   ['160-640', 'ord5-4'], ['>640', 'ord5-5']],
   churn: [['private parcel', 'ord3-2']],
-  thresholds: [['under 20 ac', 'ord5-1'], ['20-40 ac (above the DEQ line)', 'cat-2'],
+  thresholds: [['under 20 ac', 'ord5-1'], ['20-40 ac (above the DEQ line)', 'statute'],
                ['40-160', 'ord5-3'], ['over 160', 'ord5-5']],
 };
 
