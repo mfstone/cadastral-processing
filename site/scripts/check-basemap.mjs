@@ -1,0 +1,20 @@
+import puppeteer from 'puppeteer-core';
+const b = await puppeteer.launch({ executablePath:'/usr/bin/google-chrome', headless:true,
+  args:['--no-sandbox','--disable-dev-shm-usage'] });
+const p = await b.newPage();
+const errs=[], failed=[];
+p.on('console', m=>{ if(m.type()==='error') errs.push(m.text()); });
+p.on('pageerror', e=>errs.push(String(e)));
+p.on('requestfailed', r=>failed.push(`${r.url().slice(0,70)} ${r.failure()?.errorText}`));
+await p.goto('http://127.0.0.1:4400/', { waitUntil:'networkidle2', timeout:60000 });
+await p.waitForSelector('#panel .card svg', { timeout:60000 });
+await new Promise(r=>setTimeout(r,1500));
+console.log('baseline errors:', errs.length);
+await p.select('#basemap','positron');
+await new Promise(r=>setTimeout(r,6000));
+const layers = await p.evaluate(()=> window.__m ? 0 : document.querySelectorAll('#map canvas').length);
+console.log('after switching to Street basemap:');
+console.log('  console errors:', errs.length, errs.slice(0,3));
+console.log('  failed requests:', failed.length, failed.slice(0,3));
+console.log('  map canvas still present:', layers);
+await b.close();

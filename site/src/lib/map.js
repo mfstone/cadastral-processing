@@ -34,7 +34,12 @@ function mapGround() {
     .getPropertyValue('--map-ground').trim();
   return v || '#eceae4';
 }
-const BASEMAP_URL = 'https://tiles.openfreemap.org/styles/positron';
+// OpenFreeMap serves the style JSON at the path itself -- appending
+// "/style.json" returns 404. Two styles so the basemap follows the theme.
+const BASEMAP_STYLES = {
+  light: 'https://tiles.openfreemap.org/styles/positron',
+  dark: 'https://tiles.openfreemap.org/styles/dark',
+};
 
 export class UnitMap {
   constructor(container, { onSelect } = {}) {
@@ -158,38 +163,71 @@ export class UnitMap {
     this.applySelection();
   }
 
-  /** Swap between the external basemap and a first-party outlines-only view. */
+  /** Swap between the external basemap and a first-party outlines-only view.
+   *
+   * The basemap is additive and opt-in: its sources and non-symbol layers are
+   * grafted BENEATH our own, so the page renders fully from first-party data if
+   * the origin is unavailable or blocked.
+   *
+   * Two details matter. The style declares more than one source -- a raster
+   * relief layer AND the vector tiles the layers actually reference -- so every
+   * source must be registered and each layer's `source` remapped; taking the
+   * first key alone grafts the raster and every vector layer then fails with
+   * "requires a vector source". And symbol layers are skipped because they need
+   * a glyph server, which this style deliberately declares none of.
+   */
   async setBasemap(kind) {
     const m = this.map;
-    const has = !!m.getSource('base');
-    if (kind === 'none') {
-      if (has) {
-        for (const l of ['base-raster']) if (m.getLayer(l)) m.removeLayer(l);
-        if (m.getLayer('base-tiles')) m.removeLayer('base-tiles');
-        m.removeSource('base');
-      }
-      return;
+    this._basemapKind = kind;
+    // Always tear down first: switching themes reloads in the other variant.
+    for (const id of this._baseLayers || []) {
+      if (m.getLayer(id)) m.removeLayer(id);
     }
-    if (has) return;
-    // Positron has no raster endpoint; use its vector style's own sources by
-    // loading it as a sub-style would require a restyle, so a light raster-free
-    // fallback is used: a single-colour background plus our own outlines. The
-    // external basemap is therefore opt-in and additive only.
+    for (const id of this._baseSources || []) {
+      if (m.getSource(id)) m.removeSource(id);
+    }
+    this._baseLayers = [];
+    this._baseSources = [];
+    if (kind === 'none') return;
+
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark'
+      || (!document.documentElement.getAttribute('data-theme')
+          && window.matchMedia('(prefers-color-scheme: dark)').matches);
     try {
-      const res = await fetch(`${BASEMAP_URL}/style.json`);
-      if (!res.ok) throw new Error(String(res.status));
+      const res = await fetch(BASEMAP_STYLES[dark ? 'dark' : 'light']);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const style = await res.json();
-      const srcName = Object.keys(style.sources)[0];
-      m.addSource('base', style.sources[srcName]);
-      const first = m.getStyle().layers[1]?.id;
-      for (const layer of style.layers) {
-        // Symbol layers are skipped: they need a glyph server, and the
-        // style deliberately declares none.
+
+      const srcMap = {};
+      for (const [name, def] of Object.entries(style.sources || {})) {
+        const id = `base-src-${name}`;
+        if (!m.getSource(id)) m.addSource(id, def);
+        srcMap[name] = id;
+        this._baseSources.push(id);
+      }
+      // Graft beneath our own fills so the choropleth stays on top.
+      const beneath = ['township-fill', 'county-fill']
+        .find((id) => m.getLayer(id));
+      for (const layer of style.layers || []) {
         if (layer.type === 'background' || layer.type === 'symbol') continue;
-        m.addLayer({ ...layer, id: `base-${layer.id}`, source: 'base' }, first);
+        const src = srcMap[layer.source];
+        if (!src) continue;
+        const id = `base-${layer.id}`;
+        m.addLayer({ ...layer, id, source: src }, beneath);
+        this._baseLayers.push(id);
+      }
+      // Our own fills become translucent so the basemap reads through.
+      for (const id of ['township-fill', 'county-fill']) {
+        if (m.getLayer(id)) m.setPaintProperty(id, 'fill-opacity', 0.68);
       }
     } catch (err) {
       console.warn('basemap unavailable; outlines only', err);
+      this._basemapKind = 'none';
+    }
+    if (kind === 'none' || this._basemapKind === 'none') {
+      for (const id of ['township-fill', 'county-fill']) {
+        if (m.getLayer(id)) m.setPaintProperty(id, 'fill-opacity', 0.88);
+      }
     }
   }
 
@@ -197,6 +235,12 @@ export class UnitMap {
 
   /** Re-read themed colours after a light/dark switch. */
   retheme() {
+    // Reload the external basemap in the matching variant, if one is active.
+    if (this._basemapKind && this._basemapKind !== 'none') {
+      const kind = this._basemapKind;
+      this.setBasemap('none');
+      this.setBasemap(kind);
+    }
     if (this.map.getLayer('bg')) {
       this.map.setPaintProperty('bg', 'background-color', mapGround());
     }
