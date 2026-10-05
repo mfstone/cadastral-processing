@@ -33,6 +33,9 @@ import os
 import numpy as np
 import pandas as pd
 
+from . import locality
+from . import ownerclass as oc
+
 log = logging.getLogger("timeseries.aggregate")
 
 SNAP_DIR = "data/snapshots"
@@ -53,6 +56,28 @@ TOP_STATES = ["CA", "WA", "TX", "CO", "FL", "AZ", "ID", "UT", "WY"]
 
 # Display key for parcels whose unit never carried a township/range attribute.
 UNASSIGNED = "UNASSIGNED"
+
+
+def _dev_stage(df):
+    """The development ladder, recomputed from its era-stable inputs.
+
+    2 = assessed building value present
+    1 = house number assigned, no building value yet (committed to build)
+    0 = neither (platted only)
+   -1 = unknown, because this vintage's value block is dead
+
+    The middle rung uses ``has_house_number``, not ``has_situs_addr``, because
+    its MEANING is stable across eras: P(improved | house number) holds at
+    89-91% from 2006 through 2026, whereas P(improved | any address) drifts from
+    46% to 85% because era A resolves the address field to a street NAME
+    (``PROP_ST``) while 2013+ resolves it to a full address (``AddressLine1``).
+    A definition that changes meaning mid-series manufactures a trend.
+    """
+    imp = df["improved"].to_numpy()
+    stage = np.where(imp == 1, 2,
+                     np.where(df["has_house_number"].to_numpy(), 1, 0)).astype("int8")
+    stage[imp == -1] = -1
+    return stage
 
 
 def size_bin(acres: pd.Series) -> np.ndarray:
@@ -85,15 +110,35 @@ def _counts(frame: pd.DataFrame, key: str, col: str, n: int, prefix: str) -> pd.
     return t.astype("int32")
 
 
-def stock_tables(snap_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Per-snapshot stock at township (display) and county grain."""
+def build_city_county(snap_dir: str, dates: list[str]) -> pd.Series:
+    """City-to-county map for the absentee gradient, pooled over snapshots."""
+    frames = []
+    for d in dates:
+        frames.append(pd.read_parquet(os.path.join(snap_dir, f"parcels_{d}.parquet"),
+                                      columns=["situs_city", "county_n"]))
+    return locality.city_county_map(frames)
+
+
+def stock_tables(snap_dir: str, units: pd.DataFrame,
+                 city_county: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Per-snapshot stock at township (display) and county grain.
+
+    Also emits a township x snapshot x owner-state table, which is what lets the
+    dashboard filter on any specific owner origin rather than only the handful of
+    buckets that fit in a fixed-width row.
+    """
     code_to_tr = units.set_index("unit")["tr_key"]
-    twp_rows, cty_rows, state_rows = [], [], []
+    twp_rows, cty_rows, state_rows, twp_state_rows = [], [], [], []
     for path in sorted(glob.glob(os.path.join(snap_dir, "parcels_*.parquet"))):
         date = os.path.basename(path)[len("parcels_"):-len(".parquet")]
         df = pd.read_parquet(path, columns=[
             "county", "twp_code", "section", "quarter", "county_n", "acres",
-            "owner_state", "improved", "is_condo", "owner_is_entity", "subdivision"])
+            "owner_state", "improved", "is_condo", "owner_is_entity", "subdivision",
+            "owner_city", "situs_city", "owner_name_norm", "dev_stage", "is_ag",
+            "ag_acres", "has_situs_addr", "has_house_number"])
+        loc_code = locality.classify(df, city_county)
+        cls_code, _rule = oc.classify(df["owner_name_norm"])
+        ag_biz = oc.ag_business_name(df["owner_name_norm"])
         unit = df["county"].fillna("") + df["twp_code"].fillna("")
         f = pd.DataFrame({
             "unit": unit,
@@ -108,8 +153,19 @@ def stock_tables(snap_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
             "is_entity": df["owner_is_entity"].to_numpy(dtype=bool),
             "named_subdiv": (df["subdivision"].fillna("") != "").to_numpy(dtype=bool),
             "state": df["owner_state"].fillna(""),
+            "loc": loc_code,
+            "oc": cls_code,
+            "dev": _dev_stage(df),   # derived, see _dev_stage
+            "is_ag": df["is_ag"].to_numpy(dtype=bool),
+            "ag_acres": df["ag_acres"].astype("float64"),
+            "ag_biz": ag_biz,
+            "is_public": oc.is_public(cls_code),
+            "has_addr": df["has_situs_addr"].to_numpy(dtype=bool),
+            "has_num": df["has_house_number"].to_numpy(dtype=bool),
         })
         f["_one"] = 1
+        # dev_stage uses -1 for "unknown", which cannot index a pivot column.
+        f["dev_idx"] = f["dev"].replace({-1: 3}).astype("int8")
 
         # Unmappable units are bucketed, never dropped, so the two grains agree.
         f["tr_key"] = f["tr_key"].fillna(UNASSIGNED)
@@ -122,14 +178,36 @@ def stock_tables(snap_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
                 n_improved=("improved", lambda s: int((s == 1).sum())),
                 n_unimproved=("improved", lambda s: int((s == 0).sum())),
                 n_improve_unknown=("improved", lambda s: int((s == -1).sum())),
+                n_ag=("is_ag", "sum"), ag_acres=("ag_acres", "sum"),
+                n_ag_business=("ag_biz", "sum"), n_public=("is_public", "sum"),
+                n_with_addr=("has_addr", "sum"), n_with_house_number=("has_num", "sum"),
+                acres_public=("acres", lambda s: 0.0),
             )
+            # Public/private acreage split: 13.2% of parcels hold 40.2% of the
+            # acreage, so no acreage statistic is meaningful without it.
+            pubac = sub.groupby([key, "is_public"])["acres"].sum().unstack(fill_value=0.0)
+            base["acres_public"] = pubac.get(True, 0.0)
+            base["acres_private"] = pubac.get(False, 0.0)
             szc = _counts(sub, key, "sz", 8, "n_sz")
             sza = sub.pivot_table(index=key, columns="sz", values="acres",
                                   aggfunc="sum", fill_value=0.0)
             sza = sza.reindex(columns=range(8), fill_value=0.0)
             sza.columns = [f"ac_sz{i}" for i in range(8)]
             sbc = _counts(sub, key, "sb", 12, "n_st")
-            out = base.join(szc).join(sza.astype("float32")).join(sbc).reset_index()
+            locc = _counts(sub, key, "loc", locality.N_LEVELS, "n_loc")
+            loca = sub.pivot_table(index=key, columns="loc", values="acres",
+                                  aggfunc="sum", fill_value=0.0)
+            loca = loca.reindex(columns=range(locality.N_LEVELS), fill_value=0.0)
+            loca.columns = [f"ac_loc{i}" for i in range(locality.N_LEVELS)]
+            occ = _counts(sub, key, "oc", oc.N_CLASSES, "n_oc")
+            devc = _counts(sub, key, "dev_idx", 4, "n_dev")
+            deva = sub.pivot_table(index=key, columns="dev_idx", values="acres",
+                                  aggfunc="sum", fill_value=0.0)
+            deva = deva.reindex(columns=range(4), fill_value=0.0)
+            deva.columns = [f"ac_dev{i}" for i in range(4)]
+            out = (base.join(szc).join(sza.astype("float32")).join(sbc)
+                   .join(locc).join(loca.astype("float32")).join(occ)
+                   .join(devc).join(deva.astype("float32")).reset_index())
             out["snapshot"] = date
             sink.append(out)
 
@@ -138,11 +216,21 @@ def stock_tables(snap_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
               .agg(parcels=("_one", "sum"), acres=("acres", "sum")).reset_index())
         sm["snapshot"] = date
         state_rows.append(sm)
+
+        # Township x owner-state, so any specific origin can be selected. Kept
+        # long and sparse: most townships draw owners from a handful of states.
+        ts = (f[(f["state"] != "") & f["tr_key"].notna()]
+              .groupby(["tr_key", "state"])
+              .agg(parcels=("_one", "sum"), acres=("acres", "sum"),
+                   private_parcels=("is_public", lambda s: int((~s).sum()))).reset_index())
+        ts["snapshot"] = date
+        twp_state_rows.append(ts)
         log.info("  stock %s", date)
 
     return (pd.concat(twp_rows, ignore_index=True),
             pd.concat(cty_rows, ignore_index=True),
-            pd.concat(state_rows, ignore_index=True))
+            pd.concat(state_rows, ignore_index=True),
+            pd.concat(twp_state_rows, ignore_index=True))
 
 
 def flow_tables(event_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -207,8 +295,13 @@ def flow_tables(event_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
 def build(out_dir: str = OUT_DIR) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     units = pd.read_parquet(os.path.join(LOC_DIR, "spatial_unit.parquet"))
+    all_dates = sorted(os.path.basename(p)[len("parcels_"):-len(".parquet")]
+                       for p in glob.glob(os.path.join(SNAP_DIR, "parcels_*.parquet")))
+    log.info("city-to-county map for the absentee gradient")
+    city_county = build_city_county(SNAP_DIR, all_dates[-6:])
+    log.info("  %d cities mapped", len(city_county))
     log.info("stock tables")
-    twp_stock, cty_stock, state_stock = stock_tables(SNAP_DIR, units)
+    twp_stock, cty_stock, state_stock, twp_state = stock_tables(SNAP_DIR, units, city_county)
     log.info("flow tables")
     twp_flow, cty_flow = flow_tables(EVENT_DIR, units)
 
@@ -247,8 +340,9 @@ def build(out_dir: str = OUT_DIR) -> dict:
 
     files = {}
     for name, df in (("stock_township", twp_stock), ("stock_county", cty_stock),
-                     ("stock_county_state", state_stock), ("flow_township", twp_flow),
-                     ("flow_county", cty_flow)):
+                     ("stock_county_state", state_stock),
+                     ("stock_township_state", twp_state),
+                     ("flow_township", twp_flow), ("flow_county", cty_flow)):
         p = os.path.join(out_dir, f"{name}.parquet")
         df.to_parquet(p, index=False, compression="zstd")
         files[name] = {"rows": int(len(df)), "cols": int(df.shape[1]),
@@ -258,6 +352,13 @@ def build(out_dir: str = OUT_DIR) -> dict:
 
     qa = {"files": files,
           "size_labels": SIZE_LABELS,
+          "locality_levels": locality.LEVELS,
+          "owner_classes": oc.CLASSES,
+          "dev_stages": ["platted_only", "addressed_not_built", "built", "unknown"],
+          "owner_class_calibration": oc.calibrate(
+              pd.read_parquet(os.path.join(SNAP_DIR, "parcels_2006-07-14.parquet"),
+                              columns=["owner_name_norm", "owner_class", "acres"])),
+          "cities_mapped": int(len(city_county)),
           "state_buckets": ["MT"] + TOP_STATES + ["other_us", "unknown"],
           "township_units": int(twp_stock["tr_key"].nunique()),
           "counties": int(cty_stock["county_n"].nunique()),

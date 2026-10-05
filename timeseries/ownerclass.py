@@ -141,7 +141,7 @@ def is_public(cls: np.ndarray) -> np.ndarray:
 # is a registered company, so "S BAR B RANCH" cannot be assigned a legal form
 # without guessing. Carried as a separate flag rather than forced into a class,
 # which also makes it directly useful as a dashboard filter.
-_AG_BUSINESS = re.compile(r"\b(RANCH|RANCHES|RANCHO|FARM|FARMS|LIVESTOCK|CATTLE|"
+_AG_BUSINESS = re.compile(r"\b(?:RANCH|RANCHES|RANCHO|FARM|FARMS|LIVESTOCK|CATTLE|"
                           r"GRAZING|SHEEP|ANGUS|HEREFORD|FEEDLOT|DAIRY|ORCHARD|"
                           r"VINEYARD|TIMBER|FORESTRY)\b")
 

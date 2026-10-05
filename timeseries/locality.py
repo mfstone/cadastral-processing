@@ -26,6 +26,14 @@ essentially Montana's place list), so `local` is decidable for a subset while
 This is a **mailing address**, never residence. It cannot separate an
 owner-occupier from a local landlord, and a property manager's or trustee's
 address reads as the owner's.
+
+**The `local` level is not comparable across 2009.** It requires the parcel's
+situs city, and `PROP_CITY` coverage collapses from 82.8% to 40.3% in the
+2009-02-22 vintage. Measured on private acreage, `local` reads 17.8% (2003),
+2.4% (2010), 5.1% (2026) -- a coverage artifact, not a change in who owns
+Montana. Use :func:`collapse_in_county` for any time series: `local` and
+`same_county` combined rely only on the owner-city-to-county map, and that
+series is stable at 50.0% / 48.1% / 47.0% / 47.0% / 47.2% across the same dates.
 """
 
 from __future__ import annotations
@@ -78,6 +86,24 @@ def classify(df: pd.DataFrame, city_county: pd.Series) -> np.ndarray:
     both = (owner_city != "") & (situs_city != "")
     local = np.asarray(both & (owner_city == situs_city), dtype=bool)
     out[local & is_mt] = 0                                  # local
+    return out
+
+
+# The three levels that are safe to plot over time. `local` versus `same_county`
+# is a cross-sectional distinction only -- see the module docstring.
+ROBUST_LEVELS = ["in_county", "elsewhere_in_state", "out_of_state_or_unknown"]
+
+
+def collapse_in_county(codes: np.ndarray) -> np.ndarray:
+    """Collapse to the three time-comparable tiers.
+
+    0 = in the parcel's county (local + same_county)
+    1 = elsewhere in Montana
+    2 = out of state, or owner location unknown
+    """
+    out = np.full(len(codes), 2, dtype="int8")
+    out[codes == 2] = 1
+    out[(codes == 0) | (codes == 1)] = 0
     return out
 
 

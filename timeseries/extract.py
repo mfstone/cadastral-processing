@@ -335,11 +335,15 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
 
     # Development stage: the ladder, as one ordered column.
     #   2 = assessed building value present
-    #   1 = situs address assigned, no building value yet  (committed)
+    #   1 = house number assigned, no building value yet   (committed)
     #   0 = neither                                        (platted only)
     #  -1 = unknown, because this vintage's value block is dead
+    # has_house_number, not has_situs_addr: its meaning is era-stable.
+    # P(improved | house number) holds at 89-91% from 2006 to 2026, while
+    # P(improved | any address) drifts 46% -> 85% because era A resolves the
+    # address field to a street NAME (PROP_ST) and 2013+ to a full address.
     stage = np.where(parcels["improved"].to_numpy() == 1, 2,
-                     np.where(parcels["has_situs_addr"].to_numpy(), 1, 0)).astype("int8")
+                     np.where(parcels["has_house_number"].to_numpy(), 1, 0)).astype("int8")
     stage[parcels["improved"].to_numpy() == -1] = -1
     parcels["dev_stage"] = stage
     parcels["is_ag"] = (parcels["ag_acres"].fillna(0) > 0).to_numpy(dtype=bool)
