@@ -118,13 +118,44 @@ const fmtShort = (v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
   : Math.abs(v) >= 1e3 ? `${(v / 1e3).toFixed(0)}k`
   : Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
 
-function legend(ramp, lo, hi, diverging) {
+function legend(ramp, lo, hi, diverging, reason) {
   const l = $('legend');
+  // A blank surface must name its own cause. "Coverage mask" is the wrong
+  // explanation when the vintage's field is simply dead.
+  const why = reason
+    ? `<div class="note"><strong>No data at this snapshot.</strong> ${reason}</div>`
+    : '<div class="note">Grey = no comparable data (coverage mask), never zero.</div>';
   l.innerHTML = `<div class="title">${l.dataset.title || ''}</div>
-    <div class="ramp">${ramp.map((c) => `<i style="background:${c}"></i>`).join('')}</div>
-    <div class="ends"><span>${lo}</span><span>${hi}</span></div>
-    ${diverging ? '<div class="note">Diverging around zero; grey midpoint is no change.</div>' : ''}
-    <div class="note">Grey = no comparable data (coverage mask), never zero.</div>`;
+    ${reason ? '' : `<div class="ramp">${ramp.map((c) => `<i style="background:${c}"></i>`).join('')}</div>
+    <div class="ends"><span>${lo}</span><span>${hi}</span></div>`}
+    ${diverging && !reason ? '<div class="note">Diverging around zero; grey midpoint is no change.</div>' : ''}
+    ${why}`;
+}
+
+/** Fields this vintage cannot report, from meta.field_availability. */
+function unavailableAt(snap) {
+  const rec = (S.meta.field_availability || []).find((r) => r.snapshot === snap);
+  return rec ? rec.unavailable : [];
+}
+const FIELD_LABEL = {
+  development_ladder: 'development ladder',
+  agricultural_acreage: 'agricultural acreage',
+};
+
+/** A prominent card explaining a vintage-specific gap. */
+function unavailableCard(panel, field) {
+  const rec = (S.meta.field_availability || []).find((r) => r.snapshot === S.snap);
+  const c = C.card(panel, `No ${FIELD_LABEL[field] || field} in this vintage`);
+  const name = FIELD_LABEL[field] || field;
+  const d = document.createElement('div');
+  d.className = 'caveat';
+  d.innerHTML = `The <strong>${S.dim.snapshots[S.snap].date}</strong> export ships the `
+    + `columns this view needs entirely zero, so the ${name} is `
+    + `<strong>unknown</strong> here, not zero. Every other measure in this snapshot is sound — `
+    + `parcel counts, acreage, ownership and size classes all read normally. `
+    + `The other 2009 vintage, <strong>2009-02-22</strong>, is unaffected.`;
+  c.appendChild(d);
+  return c;
 }
 
 /* -------------------------------------------------------------------- views */
@@ -138,8 +169,22 @@ VIEWS.ladder = {
     const dev = await twpCube('dev');
     const { c, ids } = await activeStock('dev');
     const cov = S.level === 'county' ? await countyCube() : await twpCube('core');
+    const gone = unavailableAt(S.snap);
+    if (gone.includes('development_ladder')) {
+      const masked = cssVar('--masked');
+      const colors = new Map();
+      for (const u of ids) {
+        const fid = unitFeatureId(u);
+        if (fid != null) colors.set(fid, masked);
+      }
+      S.map.paint(colors);
+      legend([], '', '', false,
+        `The ${S.dim.snapshots[S.snap].date} export ships its value columns entirely `
+        + 'zero, so improvement status is unknown in this vintage — not a coverage gap.');
+      unavailableCard(panel, 'development_ladder');
+    }
 
-    paintFrom(c, ids, (cc, u, s) => {
+    if (!gone.includes('development_ladder')) paintFrom(c, ids, (cc, u, s) => {
       const n0 = cc.data.n_dev0?.[u * cc.nSnaps + s] ?? 0;
       const n1 = cc.data.n_dev1?.[u * cc.nSnaps + s] ?? 0;
       const n2 = cc.data.n_dev2?.[u * cc.nSnaps + s] ?? 0;
@@ -166,7 +211,10 @@ VIEWS.ladder = {
     }
 
     const tot = use.reduce((a, s) => a + s[S.snap], 0);
-    C.stats(C.card(panel, 'At the selected snapshot', selectionNote()), [
+    // Zeroes and NaN% here would read as a measurement; the explanatory card
+    // above already says the vintage cannot report this.
+    if (!gone.includes('development_ladder')) C.stats(
+      C.card(panel, 'At the selected snapshot', selectionNote()), [
       { value: C.fmtInt(ser[1][S.snap]), label: 'addressed, not built',
         detail: tot ? `${((100 * ser[1][S.snap]) / (ser[0][S.snap] + ser[1][S.snap] + ser[2][S.snap])).toFixed(1)}% of parcels` : '' },
       { value: C.fmtInt(ser[0][S.snap]), label: 'platted only' },
@@ -430,6 +478,9 @@ VIEWS.fragmentation = {
     for (let i = 0; i < agSeries.length; i++) {
       if (!(avail[i] > nUnitsSel * 0.5)) agSeries[i] = NaN;
     }
+    if (unavailableAt(S.snap).includes('agricultural_acreage')) {
+      unavailableCard(panel, 'agricultural_acreage');
+    }
     const card2 = C.card(panel, 'Agricultural-use acreage',
       'Parcels carrying any agricultural-use acreage — a cleaner indicator than PropType, which is coded inconsistently across counties. Acreage is clamped to each parcel\u2019s own area, since agricultural use is a subset of the parcel; without that the 2003 and 2004 exports report 735M and 781M acres against a mapped 86M.');
     C.lineChart(card2, {
@@ -635,17 +686,25 @@ function buildControls() {
   slider.max = String(S.nSnaps - 1);
   slider.value = String(S.nSnaps - 1);
   S.snap = S.nSnaps - 1;
-  const setSnap = () => {
-    S.snap = Number(slider.value);
-    $('snaplabel').textContent = S.dim.snapshots[S.snap].date;
-    render();
+  const label = () => {
+    const d = S.dim.snapshots[S.snap].date;
+    const gone = unavailableAt(S.snap);
+    const el = $('snaplabel');
+    el.textContent = d;
+    el.title = gone.length
+      ? `${d}: this export ships ${gone.map((g) => FIELD_LABEL[g] || g).join(' and ')} `
+        + 'entirely zero, so those measures are unknown here.'
+      : d;
+    const mark = $('snapwarn');
+    if (mark) {
+      mark.hidden = !gone.length;
+      mark.title = el.title;
+    }
   };
-  slider.addEventListener('input', () => {
-    S.snap = Number(slider.value);
-    $('snaplabel').textContent = S.dim.snapshots[S.snap].date;
-  });
+  const setSnap = () => { S.snap = Number(slider.value); label(); render(); };
+  slider.addEventListener('input', () => { S.snap = Number(slider.value); label(); });
   slider.addEventListener('change', setSnap);
-  $('snaplabel').textContent = S.dim.snapshots[S.snap].date;
+  label();
 
   $('level').addEventListener('change', (e) => {
     S.level = e.target.value;

@@ -285,6 +285,25 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
         json.dump(dim, fh, separators=(",", ":"))
     files["dim.json"] = {"bytes": os.path.getsize(os.path.join(out_dir, "dim.json"))}
 
+    # Which published fields are unusable in which vintage. A dead field is not
+    # a coverage problem and must not be reported as one: the 2009-07-05 export
+    # ships its value block and its agricultural block entirely zero, so the
+    # development ladder and agricultural acreage are *unknown* there while
+    # every other measure in that snapshot is sound.
+    avail = []
+    for s_ in snaps:
+        row = twp[twp["snapshot"] == s_]
+        ladder = int(row[["n_dev0", "n_dev1", "n_dev2"]].to_numpy().sum()) > 0
+        agric = int(row["ag_available"].sum()) > 0 if "ag_available" in row else True
+        if not (ladder and agric):
+            avail.append({
+                "snapshot": snap_id[s_], "date": s_,
+                "unavailable": ([] if ladder else ["development_ladder"])
+                               + ([] if agric else ["agricultural_acreage"]),
+                "reason": "this MSL export ships the affected columns entirely zero; "
+                          "the values are unknown, not zero",
+            })
+
     cov = json.load(open(os.path.join(COVER_DIR, "qa_coverage.json")))
     lad = json.load(open(os.path.join(LADDER_DIR, "qa_ladder.json")))
     facts_qa = json.load(open(os.path.join(FACT_DIR, "qa_facts.json")))
@@ -294,6 +313,7 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
         "townships": len(tr_keys), "counties": 56,
         "first_fully_covered_snapshot": cov.get("first_snapshot_fully_covered"),
         "comparable_series_begins": "2008",
+        "field_availability": avail,
         "owner_class_calibration": facts_qa.get("owner_class_calibration"),
         "tenure_note": facts_qa.get("tenure_note"),
         "dormant": {k: lad[k] for k in
