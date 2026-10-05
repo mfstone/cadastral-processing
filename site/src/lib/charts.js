@@ -272,7 +272,8 @@ export function lineChart(host, {
 
   const ch = el('line', { class: 'crosshair', y1: f.y0, y2: f.y1, x1: -99, x2: -99 }, f.svg);
   const dots = series.map((_, j) => el('circle', {
-    r: 4, fill: colors[j], stroke: cssVar('--surface-1'), 'stroke-width': 2, cx: -99, cy: -99,
+    r: 4, fill: colors[j], stroke: cssVar('--surface-1'), 'stroke-width': 2,
+    cx: 0, cy: 0, opacity: 0,
   }, f.svg));
   const hit = el('rect', { class: 'hit', x: f.x0, y: f.y0, width: f.x1 - f.x0, height: f.y1 - f.y0 }, f.svg);
   hit.addEventListener('mousemove', (ev) => {
@@ -282,8 +283,8 @@ export function lineChart(host, {
     ch.setAttribute('x1', X(i)); ch.setAttribute('x2', X(i));
     series.forEach((s, j) => {
       const ok = isFinite(s[i]);
-      dots[j].setAttribute('cx', ok ? X(i) : -99);
-      dots[j].setAttribute('cy', ok ? Y(s[i]) : -99);
+      dots[j].setAttribute('opacity', ok ? 1 : 0);
+      if (ok) { dots[j].setAttribute('cx', X(i)); dots[j].setAttribute('cy', Y(s[i])); }
     });
     const rows = series.map((s, j) =>
       `<tr><td><i style="background:${colors[j]}"></i>${labels[j]}</td><td>${fmt(s[i])}</td></tr>`).join('');
@@ -291,7 +292,7 @@ export function lineChart(host, {
   });
   hit.addEventListener('mouseleave', () => {
     hideTip(); ch.setAttribute('x1', -99); ch.setAttribute('x2', -99);
-    dots.forEach((d) => { d.setAttribute('cx', -99); d.setAttribute('cy', -99); });
+    dots.forEach((d) => d.setAttribute('opacity', 0));
   });
 
   if (series.length >= 2) legendRow(wrap, labels.map((l, j) => ({ label: l, color: colors[j] })));
@@ -368,6 +369,77 @@ export function rankBars(host, { items, color, fmt = fmtInt, caption, max: given
     r.addEventListener('mouseleave', hideTip);
   });
   tableView(wrap, ['', 'value'], items.map((d) => [d.label, fmt(d.value)]), caption);
+  return wrap;
+}
+
+/**
+ * Small multiples: one mini chart per facet, sharing a y-scale.
+ *
+ * The fold-to form when a categorical dimension exceeds what hue can carry.
+ * Seven reservations cannot be told apart as seven lines, and generating an
+ * eighth hue is never the answer; faceting keeps every series in the first
+ * categorical slot and lets position carry identity instead of colour.
+ */
+export function smallMultiples(host, {
+  facets, xLabels, color, yMax = 100, fmt = (v) => `${Math.round(v)}%`,
+  height = 62, caption, cols = 2,
+}) {
+  const wrap = document.createElement('div');
+  wrap.style.display = 'grid';
+  wrap.style.gridTemplateColumns = `repeat(${cols}, minmax(0,1fr))`;
+  wrap.style.gap = '10px 14px';
+  host.appendChild(wrap);
+  const fill = color || cssVar('--cat-1');
+
+  for (const f of facets) {
+    const cell = document.createElement('div');
+    wrap.appendChild(cell);
+    const t = document.createElement('div');
+    t.style.cssText = 'font-size:11px;font-weight:650;color:var(--ink-1);margin-bottom:1px';
+    const last = [...f.values].reverse().find((v) => isFinite(v));
+    t.textContent = `${f.label} · ${fmt(last ?? NaN)}`;
+    cell.appendChild(t);
+
+    // frame() clears its host, so the svg gets its own container and the
+    // title above it survives.
+    const plot = document.createElement('div');
+    cell.appendChild(plot);
+    const fr = frame(plot, { height, padL: 4, padR: 4, padT: 5, padB: 4 });
+    const n = f.values.length;
+    const X = (i) => fr.x0 + (n === 1 ? 0 : (i / (n - 1)) * (fr.x1 - fr.x0));
+    const Y = (v) => fr.y1 - (v / yMax) * (fr.y1 - fr.y0);
+    // A recessive 50% reference so the facets are comparable at a glance.
+    el('line', { x1: fr.x0, x2: fr.x1, y1: Y(yMax / 2), y2: Y(yMax / 2),
+      stroke: cssVar('--grid'), 'stroke-width': 1 }, fr.svg);
+    let d = '';
+    for (let i = 0; i < n; i++) {
+      if (!isFinite(f.values[i])) continue;
+      d += `${d ? 'L' : 'M'}${X(i).toFixed(1)},${Y(f.values[i]).toFixed(1)}`;
+    }
+    el('path', { d, fill: 'none', stroke: fill, 'stroke-width': 2,
+      'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, fr.svg);
+
+    const hit = el('rect', { class: 'hit', x: fr.x0, y: fr.y0,
+      width: fr.x1 - fr.x0, height: fr.y1 - fr.y0 }, fr.svg);
+    // Hidden by opacity, not by moving off-canvas: `svg { overflow: visible }`
+    // means a mark parked outside the viewBox still paints.
+    const dot = el('circle', { r: 3.5, fill, stroke: cssVar('--surface-1'),
+      'stroke-width': 2, cx: 0, cy: 0, opacity: 0 }, fr.svg);
+    hit.addEventListener('mousemove', (ev) => {
+      const bb = fr.svg.getBoundingClientRect();
+      const px = ((ev.clientX - bb.left) / bb.width) * fr.width;
+      const i = Math.max(0, Math.min(n - 1, Math.round(((px - fr.x0) / (fr.x1 - fr.x0)) * (n - 1))));
+      const ok = isFinite(f.values[i]);
+      dot.setAttribute('opacity', ok ? 1 : 0);
+      if (ok) { dot.setAttribute('cx', X(i)); dot.setAttribute('cy', Y(f.values[i])); }
+      showTip(`<div class="t">${f.label}</div>${xLabels[i]}: ${fmt(f.values[i])}`, ev);
+    });
+    hit.addEventListener('mouseleave', () => {
+      hideTip(); dot.setAttribute('opacity', 0);
+    });
+  }
+  tableView(host, ['', ...xLabels],
+    facets.map((f) => [f.label, ...Array.from(f.values, fmt)]), caption);
   return wrap;
 }
 

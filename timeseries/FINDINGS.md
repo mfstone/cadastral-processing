@@ -310,3 +310,79 @@ The general lesson is that the earlier degeneracy rule only caught fields that
 were *empty*. A field can also be *impossibly large*, and the check that catches
 it is a relationship the data must satisfy — here, that a part cannot exceed its
 whole — rather than a threshold on the field alone.
+
+## 15. Reservations: jurisdiction is not ownership, and names drift
+
+`MontanaReservations_shp.zip` carries the seven Montana reservations (8.39 M
+acres) and off-reservation trust land (174 k acres).
+
+**A reservation boundary is jurisdictional, not a form of ownership.**
+Reservations hold large amounts of fee land in non-tribal hands, the legacy of
+allotment-era parcelling, and the proportion varies enormously:
+
+| reservation | tribal trust | fee / private |
+|---|--:|--:|
+| Rocky Boy's | 100.0% | 0.0% |
+| Northern Cheyenne | 97.9% | 2.1% |
+| Fort Belknap | 92.1% | 4.7% |
+| Blackfeet | 67.1% | 32.6% |
+| Crow | 64.1% | 34.0% |
+| Flathead | 63.6% | 33.4% |
+| **Fort Peck** | **40.5%** | **59.3%** |
+
+So `reservation` is published as its own dimension beside tenure, never folded
+into it, and the crosstab is the checkerboard.
+
+**It validates the name-based tribal class from the outside.** 95.4% of
+name-classified tribal parcels fall inside a reservation and a further 542 sit on
+off-reservation trust land, leaving 2.0% in neither. And the largest non-tribal
+owners *inside* reservations are genuine ranches and companies — `SUNLIGHT RANCH
+COMPANY`, `PADLOCK RANCH CO`, `BIG SKY COLONY INC`, `MONETTE FARMS USA INC` — so
+the 3.09 M acres of fee land inside reservations is real, not misclassification.
+
+### Owner names drift between vintages, and it moves land between classes
+
+The same 39,850-acre holding at Rocky Boy's is titled:
+
+```
+2008   UNITED STATES OF AMERICA ROCKY BOY RESERVATION   -> tribal
+2013   UNITED STATES OF AMERICA                         -> federal   (!)
+2021   UNITED STATES OF AMERICA                         -> federal   (!)
+2026   USA IN TRUST FOR                                 -> tribal
+```
+
+The land never changed; only its label did, and a name-only classifier follows
+the label. The result was a **70-point collapse and recovery in Rocky Boy's
+tribal share** that is pure artifact — 99.9% → 29.5% → 99.9%.
+
+Three independent sources settle it. Public-domain federal land appears in the
+public-lands layer *and* names its managing agency; land held in trust for a
+tribe does neither and sits on reservation or trust land. So a parcel that is
+titled with the **bare sovereign**, is **inside a reservation or on
+off-reservation trust land**, and is **absent from the public-lands layer** is
+trust land. Requiring the name to be bare is what keeps genuine Fish and
+Wildlife, Park Service and Bureau of Reclamation holdings inside reservations out
+of the reclassification.
+
+The rule moves 288–502 parcels per snapshot. Rocky Boy's reads 99.9% → 100.0%
+across the whole series, and statewide tribal trust becomes a smooth rising
+series: **4.95 M → 5.36 M acres**.
+
+### Two classification bugs found the same way
+
+- **Bare `USA` matched company names.** `MONETTE FARMS USA INC` (51.7 k acres),
+  `GARNET USA LLC`, `BOYNE USA INC`, `MILLERCOORS USA LLC` — 291 parcels and
+  57.0 k acres of plainly private land classified federal. The token is now
+  anchored to the start of the name; of the 421 parcels carrying `USA`
+  elsewhere, all are corporate but one allottee trust the tribal rule catches
+  first.
+- **The Bureau of Indian Affairs administers land held in trust for tribes**, so
+  it now classifies as tribal rather than as public-domain federal.
+
+Calibration against 2006 `OWNCLASS` is unchanged at **0.9839** overall, with
+federal precision improving slightly to 0.9837.
+
+### Land returning to trust
+
+Tribal trust acreage inside reservations rises **4.72 M → 5.17 M (+449 k acres)**
+across 23 years, concentrated in Flathead (+199 k) and Blackfeet (+156 k).

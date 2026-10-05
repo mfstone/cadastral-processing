@@ -306,6 +306,7 @@ VIEWS.ownership = {
     });
 
     await tenureCard(panel, units);
+    await reservationCard(panel);
     await originRankCard(panel);
   },
 };
@@ -323,6 +324,43 @@ async function tenureCard(panel, units) {
     colors: [cssVar('--cat-1'), cssVar('--cat-2'), cssVar('--cat-3')],
     xLabels: snapLabels(), share: true, fmt, caption: 'Tenure composition',
   });
+}
+
+async function reservationCard(panel) {
+  if (!S.dim.reservations || !S.dim.reservations.length) return;
+  let t;
+  try { t = await loadTable('reservation_stock'); } catch { return; }
+  const col = (n) => t.columns.indexOf(n);
+  const ri = col('r'), si = col('s'), ti = col('ten'), ai = col('acres');
+  const names = S.dim.reservations;
+  const nS = S.nSnaps;
+  const tribalIdx = S.dim.labels.tenure.indexOf('tribal_trust');
+  const trib = names.map(() => new Float64Array(nS));
+  const tot = names.map(() => new Float64Array(nS));
+  for (const row of t.rows) {
+    const r = Number(row[ri]), sn = Number(row[si]), ten = Number(row[ti]);
+    const ac = Number(row[ai]) || 0;
+    if (!(r >= 0 && r < names.length && sn >= 0 && sn < nS)) continue;
+    tot[r][sn] += ac;
+    if (ten === tribalIdx) trib[r][sn] += ac;
+  }
+  const facets = names.map((n, i) => ({
+    label: n.replace(/'S$/, "'s").replace(/\b(\w)(\w*)/g, (_, a, b) => a + b.toLowerCase()),
+    values: Float64Array.from(trib[i], (v, j) => (tot[i][j] ? (100 * v) / tot[i][j] : NaN)),
+  }));
+  const card = C.card(panel, 'The checkerboard: tribal trust share inside each reservation',
+    'A reservation boundary is jurisdictional, not ownership. Reservations hold large amounts of fee land from the allotment era — 59% of Fort Peck by acreage — so the share held in trust varies from 40% to 100%. Rising share is land returning to trust.');
+  C.smallMultiples(card, {
+    facets, xLabels: snapLabels(), color: cssVar('--cat-2'), yMax: 100,
+    caption: 'Tribal-trust share of acreage by reservation', cols: 2,
+  });
+  const note = document.createElement('div');
+  note.className = 'caveat';
+  note.textContent = 'Statewide, tribal trust rises from 4.95M to 5.36M acres across the series. '
+    + 'Owner names drift between vintages, so trust status is confirmed where three independent '
+    + 'sources agree: a bare-sovereign name, reservation or off-reservation trust land, and '
+    + 'absence from the public-lands layer.';
+  card.appendChild(note);
 }
 
 async function originRankCard(panel) {

@@ -133,6 +133,8 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
     cty_flow = pd.read_parquet(os.path.join(FACT_DIR, "flow_county.parquet"))
     cty_state = pd.read_parquet(os.path.join(FACT_DIR, "stock_county_state.parquet"))
     twp_state = pd.read_parquet(os.path.join(FACT_DIR, "stock_township_state.parquet"))
+    res_path = os.path.join(FACT_DIR, "stock_reservation.parquet")
+    res_stock = pd.read_parquet(res_path) if os.path.exists(res_path) else pd.DataFrame()
     units = pd.read_parquet(os.path.join(LOC_DIR, "spatial_unit.parquet"))
 
     # Small integer ids keep every fact row narrow.
@@ -203,6 +205,19 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
                                 "largest": sorted(per_state.items(),
                                                   key=lambda x: -x[1])[:5]}
 
+    # ---- reservations: jurisdiction crossed with tenure, i.e. the checkerboard
+    if len(res_stock):
+        rs = res_stock.copy()
+        rs["s"] = rs["snapshot"].map(snap_id).astype("int8")
+        names = sorted(rs["reservation"].unique())
+        rs["r"] = rs["reservation"].map({n: i for i, n in enumerate(names)}).astype("int8")
+        files["reservation_stock"] = _write(
+            rs[["r", "s", "ten", "parcels", "acres"]],
+            os.path.join(out_dir, "reservation_stock.parquet"))
+        reservation_names = names
+    else:
+        reservation_names = []
+
     # ---- planning analytics
     for name, src in (("absorption", "absorption.parquet"),
                       ("size_histogram", "size_histogram.parquet"),
@@ -254,6 +269,7 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
                      for c in sorted(COUNTY_PREFIX)],
         "townships": townships,
         "states": states,
+        "reservations": reservation_names,
         "labels": {
             "size": ["unknown", "<1", "1-5", "5-20", "20-40", "40-160", "160-640", ">640"],
             "locality": locality.LEVELS,
@@ -295,8 +311,12 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
             "parcels in 2026 have a building and no house number.",
             "Public-domain status comes from a single 2026 public-lands layer "
             "applied to every year.",
-            "Tribal trust land is identified from owner names only; the "
-            "public-lands layer carries none.",
+            "A reservation boundary is jurisdictional, not ownership: "
+            "reservations hold large amounts of fee land from the allotment era, "
+            "59% of Fort Peck by acreage.",
+            "Tribal trust is identified from owner names, refined where three "
+            "sources agree -- a bare-sovereign name, inside a reservation or on "
+            "off-reservation trust land, and absent from the public-lands layer.",
             "The absentee 'local' tier is not comparable across 2009; use the "
             "three-tier collapse for any time series.",
             "2009-07-05 has a dead value block: improvement status is unknown, "

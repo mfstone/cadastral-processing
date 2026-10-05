@@ -78,14 +78,21 @@ RULES: list[tuple[int, str, str]] = [
     (20, "tribal", r"\b(?:TRIBE|TRIBES|TRIBAL|CONFEDERATED|ASSINIBOINE|SIOUX|"
                    r"BLACKFEET|CROW NATION|NORTHERN CHEYENNE|SALISH|KOOTENAI|"
                    r"CHIPPEWA|CREE|GROS VENTRE|FORT BELKNAP|FORT PECK|"
-                   r"IN TRUST|INDIAN ALLOTMENT|ALLOTMENT|RESERVATIO\w*)\b"),
-    (10, "federal", r"\b(UNITED STATES|U S A|USA|US GOVERNMENT|USDA|USDI|"
+                   r"IN TRUST|INDIAN ALLOTMENT|ALLOTMENT|RESERVATIO\w*|"
+                   r"BUREAU OF INDIAN AFFAIRS|\bBIA\b)\b"),
+    (10, "federal", r"\b(UNITED STATES|US GOVERNMENT|USDA|USDI|"
                     r"FOREST SERVICE|US FOREST|NATIONAL FOREST|BUREAU OF LAND|"
                     r"BUREAU OF RECLAMATION|FISH (AND|&) WILDLIFE|NATIONAL PARK|"
                     r"NATIONAL WILDLIFE|CORPS OF ENGINEERS|DEPARTMENT OF DEFENSE|"
                     r"DEPT OF DEFENSE|AIR FORCE|POSTAL SERVICE|BLM|BUREAU OF INDIAN|"
                     r"DEPARTMENT OF AGRICULTURE|DEPT OF AGRICULTURE|"
                     r"DEPARTMENT OF (?:THE )?INTERIOR|DEPT OF (?:THE )?INTERIOR)\b"),
+    # "USA" and "U S A" only at the START of the name. As a bare token anywhere
+    # they matched MONETTE FARMS USA INC (51.7k acres), GARNET USA LLC, BOYNE
+    # USA INC and others -- 291 parcels and 57.0k acres of plainly private land
+    # classified federal. Names carrying USA elsewhere are 421 parcels and all
+    # corporate but one, an allottee trust that the tribal rule catches first.
+    (11, "federal", r"^(?:USA|U S A)\b"),
     (30, "state", r"\b(STATE OF MONTANA|STATE OF MT|MT STATE TRUST|MONTANA STATE|STATE HIGHWAY|"
                   r"DEPARTMENT OF NATURAL RESOURCE|DEPT OF NATURAL RESOURCE|DNRC|"
                   r"MONTANA DEPARTMENT|MONTANA DEPT|MONTANA FISH|FISH WILDLIFE (AND|&) PARKS|"
@@ -150,6 +157,49 @@ def classify(name_norm: pd.Series) -> tuple[np.ndarray, np.ndarray]:
 
 def is_public(cls: np.ndarray) -> np.ndarray:
     return np.isin(cls, PUBLIC_CLASSES)
+
+
+# A name carrying no agency qualifier at all. Public-domain federal land names
+# its agency (USDA FOREST SERVICE, USDI BLM, NATIONAL PARK SERVICE); land held in
+# trust for a tribe is frequently titled with the bare sovereign.
+_BARE_US = re.compile(r"^(?:THE )?(?:UNITED STATES OF AMERICA|USA|U S A)$")
+
+
+def refine_tribal(cls: np.ndarray, name_norm: pd.Series, in_reservation,
+                  off_res_trust, on_public_land) -> tuple[np.ndarray, np.ndarray]:
+    """Reclassify bare-sovereign parcels on reservation land as tribal trust.
+
+    Owner names drift between vintages in a way that silently moves land between
+    classes. The same 39,850-acre holding at Rocky Boy's is titled
+    ``UNITED STATES OF AMERICA ROCKY BOY RESERVATION`` in 2008, bare
+    ``UNITED STATES OF AMERICA`` from 2013 to 2021, and ``USA IN TRUST FOR`` in
+    2026. The land never changed; only its label did, and a name-only classifier
+    follows the label -- producing a 70-point collapse and recovery in Rocky
+    Boy's tribal share that is pure artifact.
+
+    Three independent sources settle it. Public-domain federal land appears in
+    the public-lands layer and names its managing agency; land held in trust for
+    a tribe does neither, and sits inside a reservation boundary or on mapped
+    off-reservation trust land. So a parcel that is
+
+      * titled with the bare sovereign and no agency, **and**
+      * inside a reservation or on off-reservation trust land, **and**
+      * absent from the mapped public-lands layer
+
+    is trust land. Requiring the name to be bare is what keeps genuine federal
+    holdings inside reservations -- Fish and Wildlife refuges, Park Service and
+    Bureau of Reclamation parcels -- out of the reclassification.
+
+    Returns (new_cls, reclassified_mask).
+    """
+    bare = np.asarray(name_norm.fillna("").astype(str).str.fullmatch(_BARE_US, na=False), dtype=bool)
+    on_trust_land = (np.asarray(in_reservation, dtype=bool)
+                     | np.asarray(off_res_trust, dtype=bool))
+    hit = (bare & on_trust_land & ~np.asarray(on_public_land, dtype=bool)
+           & (cls != CLASS_IDX["tribal"]))
+    out = cls.copy()
+    out[hit] = CLASS_IDX["tribal"]
+    return out, hit
 
 
 # ---------------------------------------------------------------------- tenure

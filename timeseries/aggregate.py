@@ -42,6 +42,7 @@ SNAP_DIR = "data/snapshots"
 EVENT_DIR = "data/events"
 COVER_DIR = "data/coverage"
 PL_DIR = "data/publiclands"
+RES_DIR = "data/reservations"
 LOC_DIR = "data/locator"
 OUT_DIR = "data/facts"
 
@@ -140,8 +141,7 @@ def build_city_county(snap_dir: str, dates: list[str]) -> pd.Series:
     return locality.city_county_map(frames)
 
 
-def stock_tables(snap_dir: str, units: pd.DataFrame,
-                 city_county: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def stock_tables(snap_dir: str, units: pd.DataFrame, city_county: pd.Series):
     """Per-snapshot stock at township (display) and county grain.
 
     Also emits a township x snapshot x owner-state table, which is what lets the
@@ -149,7 +149,7 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
     buckets that fit in a fixed-width row.
     """
     code_to_tr = units.set_index("unit")["tr_key"]
-    twp_rows, cty_rows, state_rows, twp_state_rows = [], [], [], []
+    twp_rows, cty_rows, state_rows, twp_state_rows, res_rows = [], [], [], [], []
     for path in sorted(glob.glob(os.path.join(snap_dir, "parcels_*.parquet"))):
         date = os.path.basename(path)[len("parcels_"):-len(".parquet")]
         df = pd.read_parquet(path, columns=[
@@ -174,6 +174,27 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
         else:
             onpl = np.zeros(len(df), dtype=bool)
             log.warning("  no public-land join for %s; tenure falls back to names", date)
+        # Reservation boundaries are JURISDICTIONAL, never a tenure class --
+        # reservations hold large amounts of fee land from the allotment era,
+        # 59.3% of Fort Peck by acreage. Carried as its own dimension.
+        res_path = os.path.join(RES_DIR, f"res_{date}.parquet")
+        if os.path.exists(res_path):
+            rs = pd.read_parquet(res_path).set_index("parcel_id")
+            in_res = df["parcel_id"].map(rs["in_reservation"]).fillna(False).to_numpy(dtype=bool)
+            off_tr = df["parcel_id"].map(rs["off_res_trust"]).fillna(False).to_numpy(dtype=bool)
+            res_name = df["parcel_id"].map(rs["reservation"]).fillna("").to_numpy()
+        else:
+            in_res = np.zeros(len(df), dtype=bool)
+            off_tr = np.zeros(len(df), dtype=bool)
+            res_name = np.full(len(df), "", dtype=object)
+            log.warning("  no reservation join for %s", date)
+        # Owner names drift between vintages; three independent sources settle
+        # which federal-titled land is actually held in trust. See refine_tribal.
+        cls_code, reclassified = oc.refine_tribal(
+            cls_code, df["owner_name_norm"], in_res, off_tr, onpl)
+        if reclassified.any():
+            log.info("  %s: %s parcels reclassified to tribal trust by the spatial rule",
+                     date, f"{int(reclassified.sum()):,}")
         ten_code = oc.tenure(cls_code, onpl)
         unit = df["county"].fillna("") + df["twp_code"].fillna("")
         f = pd.DataFrame({
@@ -197,6 +218,9 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
             "ag_biz": ag_biz,
             "is_public": oc.is_public(cls_code),
             "on_public_land": onpl,
+            "in_reservation": in_res,
+            "off_res_trust": off_tr,
+            "reservation": res_name,
             "ten": ten_code,
             "has_addr": df["has_situs_addr"].to_numpy(dtype=bool),
             "has_num": df["has_house_number"].to_numpy(dtype=bool),
@@ -217,6 +241,7 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
                 n_unimproved=("improved", lambda s: int((s == 0).sum())),
                 n_improve_unknown=("improved", lambda s: int((s == -1).sum())),
                 n_on_public_land=("on_public_land", "sum"),
+                n_in_reservation=("in_reservation", "sum"),
                 n_ag=("is_ag", "sum"), ag_acres=("ag_acres", "sum"),
                 ag_available=("is_ag", lambda _s: int(ag_ok)),
                 n_ag_business=("ag_biz", "sum"), n_public=("is_public", "sum"),
@@ -266,6 +291,13 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
         sm["snapshot"] = date
         state_rows.append(sm)
 
+        rr = f[f["reservation"] != ""]
+        if len(rr):
+            rsum = (rr.groupby(["reservation", "ten"])
+                    .agg(parcels=("_one", "sum"), acres=("acres", "sum")).reset_index())
+            rsum["snapshot"] = date
+            res_rows.append(rsum)
+
         # Township x owner-state, so any specific origin can be selected. Kept
         # long and sparse: most townships draw owners from a handful of states.
         ts = (f[(f["state"] != "") & f["tr_key"].notna()]
@@ -279,7 +311,8 @@ def stock_tables(snap_dir: str, units: pd.DataFrame,
     return (pd.concat(twp_rows, ignore_index=True),
             pd.concat(cty_rows, ignore_index=True),
             pd.concat(state_rows, ignore_index=True),
-            pd.concat(twp_state_rows, ignore_index=True))
+            pd.concat(twp_state_rows, ignore_index=True),
+            pd.concat(res_rows, ignore_index=True) if res_rows else pd.DataFrame())
 
 
 def flow_tables(event_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -350,7 +383,8 @@ def build(out_dir: str = OUT_DIR) -> dict:
     city_county = build_city_county(SNAP_DIR, all_dates[-6:])
     log.info("  %d cities mapped", len(city_county))
     log.info("stock tables")
-    twp_stock, cty_stock, state_stock, twp_state = stock_tables(SNAP_DIR, units, city_county)
+    twp_stock, cty_stock, state_stock, twp_state, res_stock = stock_tables(
+        SNAP_DIR, units, city_county)
     log.info("flow tables")
     twp_flow, cty_flow = flow_tables(EVENT_DIR, units)
 
@@ -391,6 +425,7 @@ def build(out_dir: str = OUT_DIR) -> dict:
     for name, df in (("stock_township", twp_stock), ("stock_county", cty_stock),
                      ("stock_county_state", state_stock),
                      ("stock_township_state", twp_state),
+                     ("stock_reservation", res_stock),
                      ("flow_township", twp_flow), ("flow_county", cty_flow)):
         p = os.path.join(out_dir, f"{name}.parquet")
         df.to_parquet(p, index=False, compression="zstd")
