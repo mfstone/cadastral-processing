@@ -81,6 +81,17 @@ FIELD_ALIASES: dict[str, list[str]] = {
     "situs_addr_1": ["AddressLine1", "AddressLin"],
     "situs_addr_2": ["AddressLine2", "AddressL_1"],
     "situs_citystatezip": ["CityStateZip", "CityStateZ"],
+    # Agricultural-use acreage by class. Summed, these give an "is this parcel
+    # carrying agricultural land" indicator that is far cleaner than PropType,
+    # which is inconsistently coded across counties.
+    "ag_continuous_crop": ["ContinuousCropAcres", "Continuous", "CONT_CROP"],
+    "ag_fallow": ["FallowAcres", "FallowAcre", "FALLOW_ACR"],
+    "ag_farmsite": ["FarmsiteAcres", "FarmsiteAc", "FARMSTEAD"],
+    "ag_forest": ["ForestAcres", "ForestAcre", "TIMBER_ACR"],
+    "ag_grazing": ["GrazingAcres", "GrazingAcr", "GRAZING_AC"],
+    "ag_wild_hay": ["WildHayAcres", "WildHayAcr", "WILD_HAY_A"],
+    "ag_irrigated": ["IrrigatedAcres", "IrrigatedA", "IRRIG_ACRE"],
+    "ag_non_qualified": ["NonQualAcres", "NonQualAcr", "NON_QULFED"],
     "card_no": ["CARD_NO"],                       # 2002, makes multi-card visible
     "living_units": ["LIV_UNITS"],
 }

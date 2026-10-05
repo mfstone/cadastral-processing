@@ -64,8 +64,12 @@ EXTRACT_FIELDS = [
     "owner_name", "owner_name_2",
     "owner_state", "owner_city", "owner_citystatezip", "mail_state", "mail_city",
     "gis_acres", "area_sqm",
-    "subdivision", "cert_survey", "property_type", "build_value",
+    "subdivision", "cert_survey", "property_type", "build_value", "land_value",
     "owner_class", "owner_gen_descrip", "res_prop_ind",
+    "owner_zip", "mail_zip",
+    "situs_number", "situs_street", "situs_addr_1",
+    "ag_continuous_crop", "ag_fallow", "ag_farmsite", "ag_forest",
+    "ag_grazing", "ag_wild_hay", "ag_irrigated", "ag_non_qualified",
     "situs_city", "situs_citystatezip",
     "trs", "township", "plss_range", "plss_section",
 ]
@@ -222,6 +226,58 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
         csz = df.loc[valid, res["situs_citystatezip"]].astype("string").fillna("")
         v["situs_city"] = csz.str.split(",").str[0].str.strip().str.upper().astype("object")
 
+    # --- the development ladder -------------------------------------------
+    # An assigned situs address implies E911/permit-stage commitment, which is a
+    # far stronger signal than a lot merely existing. Measured: a parcel with an
+    # address carries an assessed building 82.9-87.1% of the time, against
+    # 8.4-21.8% without one -- a 4-10x lift. It is probabilistic, not
+    # deterministic: 30,812 parcels in 2026 have a building but no address.
+    addr = None
+    for key in ("situs_addr_1", "situs_street"):
+        col = res.get(key)
+        if col and col in df.columns:
+            addr = df.loc[valid, col].astype("string").str.strip().fillna("").astype("object")
+            qa["situs_address_column"] = col
+            break
+    num = None
+    col = res.get("situs_number")
+    if col and col in df.columns:
+        num = (df.loc[valid, col].astype("string").str.strip().fillna("")
+               .str.replace(r"\D", "", regex=True).astype("object"))
+    if addr is None and num is not None:
+        addr = num
+        qa["situs_address_column"] = col
+    if addr is None:
+        v["has_situs_addr"] = False
+        v["has_house_number"] = False
+        qa["situs_address_column"] = None
+    else:
+        clean = addr.str.replace(r"^0+$", "", regex=True)
+        v["has_situs_addr"] = (clean != "").to_numpy(dtype=bool)
+        # A house number implies a specific building site; a bare street name
+        # (e.g. "SILVER BUTTE RD") does not.
+        if num is not None:
+            v["has_house_number"] = ((num != "") & (num.str.replace("0", "") != "")).to_numpy(dtype=bool)
+        else:
+            v["has_house_number"] = clean.str.match(r"^\d").fillna(False).to_numpy(dtype=bool)
+    qa["pct_with_situs_addr"] = round(100.0 * float(v["has_situs_addr"].mean()), 3)
+    qa["pct_with_house_number"] = round(100.0 * float(v["has_house_number"].mean()), 3)
+
+    # --- agricultural acreage ---------------------------------------------
+    ag_cols = [res[k] for k in EXTRACT_FIELDS
+               if k.startswith("ag_") and res.get(k) and res[k] in df.columns]
+    if ag_cols:
+        ag = sum(pd.to_numeric(df.loc[valid, c], errors="coerce").fillna(0.0) for c in ag_cols)
+        v["ag_acres"] = ag.astype("float32")
+    else:
+        v["ag_acres"] = np.float32(0.0)
+    qa["ag_columns"] = ag_cols
+    qa["pct_with_ag_acres"] = round(100.0 * float((v["ag_acres"] > 0).mean()), 3)
+
+    lv_col = res.get("land_value")
+    v["land_value"] = (pd.to_numeric(df.loc[valid, lv_col], errors="coerce").astype("float64")
+                       if lv_col and lv_col in df.columns else np.nan)
+
     bv_col = res.get("build_value")
     v["build_value"] = (pd.to_numeric(df.loc[valid, bv_col], errors="coerce").astype("float64")
                         if bv_col and bv_col in df.columns else np.nan)
@@ -238,7 +294,11 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
     agg = {
         "acres": ("acres", "sum"),                 # the measured rule: SUM
         "build_value": ("build_value", "max"),     # parcel-level, repeated per part
+        "land_value": ("land_value", "max"),
+        "ag_acres": ("ag_acres", "max"),
         "is_condo": ("is_condo", "max"),
+        "has_situs_addr": ("has_situs_addr", "max"),
+        "has_house_number": ("has_house_number", "max"),
     }
     first_cols = ["county", "twp_code", "section", "quarter", "block", "lot", "unit",
                   "owner_name_raw", "owner_name_norm", "owner_blank",
@@ -246,7 +306,7 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
                   "owner_is_entity", "owner_state",
                   "owner_state_valid", "owner_in_state", "subdivision", "cert_survey",
                   "property_type", "situs_city", "owner_class", "owner_gen_descrip",
-                  "res_prop_ind"]
+                  "res_prop_ind", "owner_city", "owner_zip5"]
     for c in first_cols:
         agg[c] = (c, "first")
     parcels = grouped.agg(**agg)
@@ -272,6 +332,19 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
         parcels["improved"] = np.int8(-1)
         log.info("    improvement value unavailable (usable share %.4f) -> improved = -1",
                  bv_share)
+
+    # Development stage: the ladder, as one ordered column.
+    #   2 = assessed building value present
+    #   1 = situs address assigned, no building value yet  (committed)
+    #   0 = neither                                        (platted only)
+    #  -1 = unknown, because this vintage's value block is dead
+    stage = np.where(parcels["improved"].to_numpy() == 1, 2,
+                     np.where(parcels["has_situs_addr"].to_numpy(), 1, 0)).astype("int8")
+    stage[parcels["improved"].to_numpy() == -1] = -1
+    parcels["dev_stage"] = stage
+    parcels["is_ag"] = (parcels["ag_acres"].fillna(0) > 0).to_numpy(dtype=bool)
+    parcels["land_value"] = parcels["land_value"].fillna(-1.0).astype("float64")
+    parcels["ag_acres"] = parcels["ag_acres"].fillna(0.0).astype("float32")
 
     # Narrow dtypes; no nullable dtypes anywhere, sentinels instead.
     parcels["county_n"] = pd.to_numeric(parcels["county"], errors="coerce").fillna(-1).astype("int8")

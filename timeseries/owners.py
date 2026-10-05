@@ -88,6 +88,22 @@ def mailing_state(df: pd.DataFrame, res: dict) -> tuple[pd.Series, str]:
     return pd.Series("", index=df.index, dtype="object"), "unavailable"
 
 
+def mailing_zip5(df: pd.DataFrame, res: dict) -> pd.Series:
+    """Owner mailing ZIP5, by era (the fixed-width window where applicable)."""
+    for key in ("owner_zip", "mail_zip"):
+        col = res.get(key)
+        if col and col in df.columns:
+            z = df[col].astype("string").fillna("").str.replace(r"\D", "", regex=True)
+            return z.str.slice(0, 5).astype("object")
+    col = res.get("owner_citystatezip")
+    if col and col in df.columns:
+        raw = df[col].astype("string").fillna("")
+        return (raw.str.slice(MAILCITY_S_ZIP.start, MAILCITY_S_ZIP.stop)
+                .str.replace(r"\D", "", regex=True).str.slice(0, 5)
+                .fillna("").astype("object"))
+    return pd.Series("", index=df.index, dtype="object")
+
+
 def mailing_city(df: pd.DataFrame, res: dict) -> pd.Series:
     """Owner mailing city, by era (the fixed-width window where applicable)."""
     for key in ("owner_city", "mail_city"):
@@ -138,6 +154,11 @@ def record_fields(df: pd.DataFrame, res: dict) -> pd.DataFrame:
     out["owner_state"] = state
     out["owner_state_valid"] = state_is_valid(state)
     out["owner_in_state"] = np.asarray(state == "MT", dtype=bool)
+    # Owner city and ZIP support the absentee gradient: "in-state" is far too
+    # coarse for planning, since a Bozeman parcel owned from Billings is
+    # in-state yet still absentee.
+    out["owner_city"] = mailing_city(df, res)
+    out["owner_zip5"] = mailing_zip5(df, res)
     out.attrs["state_mechanism"] = mech
     return out
 
