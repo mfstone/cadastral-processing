@@ -1,0 +1,93 @@
+---
+import '../styles/viz.css';
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Montana cadastral change, 2003–2026</title>
+  <meta name="description" content="Where parcels are being created, who owns Montana, and what has actually been built — over 29 statewide cadastral vintages." />
+  <link rel="icon" href="/favicon.svg" />
+</head>
+<body>
+  <div id="boot">Loading 29 cadastral vintages…</div>
+
+  <div id="app" hidden>
+    <header>
+      <h1>Montana cadastral change</h1>
+      <span class="sub" id="sub"></span>
+      <nav id="nav" role="tablist" aria-label="Views"></nav>
+      <button id="theme" title="Toggle light / dark" aria-label="Toggle light or dark theme"
+              style="font:inherit;font-size:12px;padding:4px 9px;border:1px solid var(--axis);
+                     border-radius:6px;background:var(--surface-1);color:var(--ink-2);cursor:pointer">
+        ◐
+      </button>
+    </header>
+
+    <!-- Filters in one row above the content. -->
+    <div id="filters">
+      <div id="timewrap">
+        <label for="snap">Snapshot</label>
+        <input id="snap" type="range" min="0" step="1" value="0" />
+        <span id="snaplabel"></span>
+      </div>
+      <label for="level">Unit
+        <select id="level">
+          <option value="township" selected>PLSS township</option>
+          <option value="county">County</option>
+        </select>
+      </label>
+      <label for="measure">Measure
+        <select id="measure">
+          <option value="parcels" selected>Parcels</option>
+          <option value="acres">Acres</option>
+        </select>
+      </label>
+      <span id="originwrap" hidden>
+        <label for="origin">Owner origin
+          <select id="origin"></select>
+        </label>
+      </span>
+      <span id="erawrap" hidden>
+        <label for="era">Era
+          <select id="era">
+            <option value="all" selected>All</option>
+            <option value="early">2003–2010</option>
+            <option value="mid">2011–2019</option>
+            <option value="late">2020–2026</option>
+          </select>
+        </label>
+      </span>
+      <label for="basemap">Basemap
+        <select id="basemap">
+          <option value="none" selected>Outlines only</option>
+          <option value="positron">Street</option>
+        </select>
+      </label>
+      <label for="mask"><input id="mask" type="checkbox" checked /> Mask low coverage</label>
+      <button id="clearsel" style="font:inherit;font-size:12px;padding:3px 9px;
+              border:1px solid var(--axis);border-radius:5px;background:var(--surface-1);
+              color:var(--ink-2);cursor:pointer">Clear selection</button>
+    </div>
+
+    <main>
+      <div id="mapwrap">
+        <div id="map"></div>
+        <div id="legend"></div>
+      </div>
+      <div id="panel"></div>
+    </main>
+  </div>
+
+  <script>
+    import 'maplibre-gl/dist/maplibre-gl.css';
+    import { boot } from '../lib/app.js';
+    boot().catch((err) => {
+      console.error(err);
+      const b = document.getElementById('boot');
+      if (b) b.textContent = `Could not load: ${err.message}`;
+    });
+  </script>
+</body>
+</html>

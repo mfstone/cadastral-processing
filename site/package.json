@@ -1,0 +1,26 @@
+{
+  "name": "mt-cadastral-change",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Montana cadastral change, 2003-2026 - a static dashboard over 29 statewide cadastral vintages.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview --host 127.0.0.1",
+    "data": "cd .. && .venv/bin/python -m timeseries.publish",
+    "test:smoke": "node scripts/smoke-test.mjs"
+  },
+  "dependencies": {
+    "astro": "^5.6.1",
+    "hyparquet": "^1.17.1",
+    "hyparquet-compressors": "1.1.2",
+    "maplibre-gl": "^5.9.0"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.12.0"
+  }
+}

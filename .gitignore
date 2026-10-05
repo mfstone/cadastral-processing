@@ -13,3 +13,10 @@ data/_stage/
 data/events/
 data/coverage/
 data/facts/
+site/node_modules/
+site/dist/
+site/.astro/
+site/public/data/
+data/publiclands/
+data/ladder/
+data/boundaries/

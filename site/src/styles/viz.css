@@ -1,0 +1,184 @@
+/* Validated palette instance. Roles only -- the chart body never names a hex.
+   Dark values are declared under BOTH the media query and the [data-theme]
+   scope so the viewer's toggle wins in either direction. */
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --ink-1: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+
+  /* categorical identity: tenure (public / tribal trust / private).
+     Validated all-pairs, light: worst CVD dE 9.2, normal-vision 24.0. */
+  --cat-1: #2a78d6;
+  --cat-2: #eb6834;
+  --cat-3: #1baf7a;
+
+  /* ordinal 5-step, one hue, light->dark. Validated: adjacent dL all >= 0.06. */
+  --ord5-1: #86b6ef; --ord5-2: #5598e7; --ord5-3: #2a78d6;
+  --ord5-4: #1c5cab; --ord5-5: #104281;
+  /* ordinal 3-step (development ladder, locality tiers) */
+  --ord3-1: #86b6ef; --ord3-2: #2a78d6; --ord3-3: #104281;
+
+  /* sequential ramp for the choropleth */
+  --seq-1: #cde2fb; --seq-2: #b7d3f6; --seq-3: #9ec5f4; --seq-4: #86b6ef;
+  --seq-5: #5598e7; --seq-6: #2a78d6; --seq-7: #184f95; --seq-8: #0d366b;
+
+  /* diverging: blue <-> red with a NEUTRAL GRAY midpoint, never a hue */
+  --div-neg-2: #184f95; --div-neg-1: #86b6ef;
+  --div-mid: #f0efec;
+  --div-pos-1: #e9a0a0; --div-pos-2: #d03b3b;
+
+  --masked: #d8d6cf;      /* no comparable data -- never the zero colour */
+  --map-ground: #eceae4;  /* the map's own ground, themed */
+  --map-line: #9a978f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835;
+    --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70;
+    --ord5-1: #184f95; --ord5-2: #256abf; --ord5-3: #3987e5;
+    --ord5-4: #6da7ec; --ord5-5: #b7d3f6;
+    --ord3-1: #184f95; --ord3-2: #3987e5; --ord3-3: #b7d3f6;
+    --seq-1: #0d366b; --seq-2: #104281; --seq-3: #184f95; --seq-4: #256abf;
+    --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #9ec5f4; --seq-8: #cde2fb;
+    --div-neg-2: #b7d3f6; --div-neg-1: #256abf;
+    --div-mid: #383835;
+    --div-pos-1: #8f2d2d; --div-pos-2: #e66767;
+    --masked: #3a3a37;
+    --map-ground: #141413;
+    --map-line: #4a4945;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19; --page: #0d0d0d;
+  --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835;
+  --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70;
+  --ord5-1: #184f95; --ord5-2: #256abf; --ord5-3: #3987e5;
+  --ord5-4: #6da7ec; --ord5-5: #b7d3f6;
+  --ord3-1: #184f95; --ord3-2: #3987e5; --ord3-3: #b7d3f6;
+  --seq-1: #0d366b; --seq-2: #104281; --seq-3: #184f95; --seq-4: #256abf;
+  --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #9ec5f4; --seq-8: #cde2fb;
+  --div-neg-2: #b7d3f6; --div-neg-1: #256abf;
+  --div-mid: #383835;
+  --div-pos-1: #8f2d2d; --div-pos-2: #e66767;
+  --masked: #3a3a37;
+  --map-ground: #141413;
+  --map-line: #4a4945;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink-1);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 17px; }
+h2 { font-size: 13px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .06em; }
+h3 { font-size: 13px; }
+a { color: var(--cat-1); }
+
+#app { display: grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+header {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  padding: 10px 14px; background: var(--surface-1);
+  border-bottom: 1px solid var(--grid);
+}
+header .sub { color: var(--ink-2); font-size: 12px; }
+nav { display: flex; gap: 2px; margin-left: auto; }
+nav button {
+  font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid transparent; border-radius: 6px;
+}
+nav button[aria-selected="true"] {
+  background: var(--cat-1); color: #fff; border-color: var(--cat-1);
+}
+
+/* Filters live in one row above the content. */
+#filters {
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  padding: 8px 14px; background: var(--surface-1);
+  border-bottom: 1px solid var(--grid); font-size: 12px;
+}
+#filters label { display: flex; gap: 6px; align-items: center; color: var(--ink-2); }
+#filters select, #filters input[type="range"] { font: inherit; }
+#filters select {
+  background: var(--surface-1); color: var(--ink-1);
+  border: 1px solid var(--axis); border-radius: 5px; padding: 3px 6px;
+}
+#timewrap { display: flex; align-items: center; gap: 8px; min-width: 320px; flex: 1 1 320px; }
+#timewrap input { flex: 1; }
+#snaplabel { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink-1); min-width: 82px; }
+
+main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min-height: 0; }
+@media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+#mapwrap { position: relative; min-height: 320px; border-right: 1px solid var(--grid); }
+#map { position: absolute; inset: 0; }
+#legend {
+  position: absolute; left: 10px; bottom: 10px; z-index: 2;
+  background: var(--surface-1); border: 1px solid var(--grid); border-radius: 7px;
+  padding: 8px 10px; font-size: 11px; max-width: 260px;
+}
+#legend .title { color: var(--ink-2); margin-bottom: 5px; }
+#legend .ramp { display: flex; height: 9px; border-radius: 2px; overflow: hidden; }
+#legend .ramp i { flex: 1; }
+#legend .ends { display: flex; justify-content: space-between; color: var(--ink-muted); margin-top: 3px; }
+#legend .note { color: var(--ink-muted); margin-top: 5px; }
+
+#panel { overflow-y: auto; padding: 12px 14px 28px; display: flex; flex-direction: column; gap: 16px; }
+.card { background: var(--surface-1); border: 1px solid var(--grid); border-radius: 9px; padding: 11px 12px; }
+.card > h3 { margin-bottom: 2px; }
+.card .cap { font-size: 11.5px; color: var(--ink-2); margin: 2px 0 8px; }
+
+/* Stat row: a value is ink, never the series colour. */
+.stats { display: flex; gap: 18px; flex-wrap: wrap; }
+.stat .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat .k { font-size: 11px; color: var(--ink-2); }
+.stat .d { font-size: 11px; color: var(--ink-muted); }
+
+.legend-row { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-2); margin-top: 6px; }
+.legend-row span { display: inline-flex; align-items: center; gap: 5px; }
+.legend-row i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { fill: var(--ink-2); font-size: 10.5px; }
+svg .grid line { stroke: var(--grid); stroke-width: 1; }
+svg .axis line, svg .axis path { stroke: var(--axis); stroke-width: 1; }
+svg .lab-direct { fill: var(--ink-1); font-size: 10.5px; font-weight: 600; }
+svg .hit { fill: transparent; cursor: crosshair; }
+svg .crosshair { stroke: var(--ink-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+svg .refline { stroke: var(--cat-2); stroke-width: 2; }
+svg .reflab { fill: var(--cat-2); font-size: 10.5px; font-weight: 600; }
+
+.tip {
+  position: fixed; z-index: 50; pointer-events: none; background: var(--surface-1);
+  border: 1px solid var(--axis); border-radius: 6px; padding: 6px 8px;
+  font-size: 11.5px; box-shadow: 0 4px 14px rgba(0,0,0,.14); max-width: 280px;
+}
+.tip .t { font-weight: 650; margin-bottom: 3px; }
+.tip table { border-collapse: collapse; }
+.tip td { padding: 0 0 0 7px; font-variant-numeric: tabular-nums; }
+.tip td:first-child { padding: 0; color: var(--ink-2); }
+.tip i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+
+table.data { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+table.data th, table.data td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--grid); }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data th { color: var(--ink-2); font-weight: 600; }
+table.data td { font-variant-numeric: tabular-nums; }
+details.tableview { margin-top: 8px; }
+details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink-2); }
+
+.caveat { font-size: 11.5px; color: var(--ink-2); }
+.caveat ul { margin: 6px 0 0; padding-left: 18px; }
+.caveat li { margin-bottom: 3px; }
+#boot { padding: 26px; color: var(--ink-2); }
