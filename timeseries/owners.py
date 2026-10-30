@@ -49,7 +49,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from cadastral.normalize import _clean, is_entity, normalize_name
+from cadastral.normalize import _clean, is_entity, is_generic_address, normalize_address, normalize_name
 
 # MAILCITY_S is FIXED-WIDTH, not delimited: city 1-16, state 17-18, ZIP+4 19-27.
 # Splitting on whitespace breaks on every multi-word city ("BUTTE", "GREAT
@@ -118,6 +118,32 @@ def mailing_city(df: pd.DataFrame, res: dict) -> pd.Series:
     return pd.Series("", index=df.index, dtype="object")
 
 
+# A line-1 "address" that is an instruction rather than a place: the document's
+# step 28 anomaly ("some include instructions on who to mail to instead of the
+# address"). After _clean() the slash in C/O is already a space.
+_CARE_OF = re.compile(r"^(?:C O\b|%|ATTN\b|ATTENTION\b|MAIL TO\b|IN CARE OF\b|CARE OF\b)"
+                      r"|\bREGISTERED AGENT\b")
+
+
+def mailing_address(df: pd.DataFrame, res: dict) -> tuple[pd.Series, str]:
+    """Normalized mailing street address (all lines joined), by era.
+
+    2013+ carry up to three owner address lines; 2002-2011 carry one
+    (``MAIL_ADDR``). Lines are concatenated and normalized through
+    :func:`cadastral.normalize.normalize_address`, so the same key function
+    serves the single-vintage consolidation and the longitudinal pipeline.
+    """
+    parts, used = [], []
+    for key in ("owner_address_1", "owner_address_2", "owner_address_3"):
+        col = res.get(key)
+        if col and col in df.columns:
+            parts.append(df[col].astype("string").fillna("").astype("object"))
+            used.append(col)
+    if not parts:
+        return pd.Series("", index=df.index, dtype="object"), "unavailable"
+    return normalize_address(parts).astype("object"), "+".join(used)
+
+
 def state_is_valid(state: pd.Series) -> np.ndarray:
     return np.asarray(state.str.fullmatch(_STATE_OK, na=False), dtype=bool)
 
@@ -159,7 +185,15 @@ def record_fields(df: pd.DataFrame, res: dict) -> pd.DataFrame:
     # in-state yet still absentee.
     out["owner_city"] = mailing_city(df, res)
     out["owner_zip5"] = mailing_zip5(df, res)
+    # The document's consolidation identity is the full mailing address, so it
+    # is carried from here on; blank or General Delivery addresses cannot key an
+    # owner and are flagged rather than merged.
+    addr, addr_mech = mailing_address(df, res)
+    out["owner_addr_norm"] = addr
+    out["owner_addr_generic"] = is_generic_address(addr).to_numpy(dtype=bool)
+    out["owner_addr_careof"] = addr.str.contains(_CARE_OF, regex=True, na=False).to_numpy(dtype=bool)
     out.attrs["state_mechanism"] = mech
+    out.attrs["address_mechanism"] = addr_mech
     return out
 
 

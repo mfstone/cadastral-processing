@@ -237,3 +237,10 @@ details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink
 .caveat ul { margin: 6px 0 0; padding-left: 18px; }
 .caveat li { margin-bottom: 3px; }
 #boot { padding: 26px; color: var(--ink-2); }
+
+/* Holdings and review tables */
+.tablewrap { overflow-x: auto; margin-top: 6px; }
+.tablewrap table.data { width: 100%; font-size: 12px; border-collapse: collapse; }
+.tablewrap table.data th, .tablewrap table.data td { padding: 3px 6px; border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
+.tablewrap table.data th { color: var(--ink-2); font-weight: 650; }
+.badge { display: inline-block; font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--axis); border-radius: 9px; color: var(--ink-2); white-space: nowrap; }

@@ -88,6 +88,35 @@ CSV companions (`*_owner_join.csv`, `*_review_queue.csv`, `*_owner_summary.csv`)
 Statewide `Montana_consolidated.gpkg`: `owners_dissolved_statewide` (by
 `GlobalOwnerID`), `owner_county_xwalk`; plus `Montana_owner_county_xwalk.csv`.
 
+## Large private holdings (Haggerty et al. 2022)
+
+The longitudinal pipeline under `timeseries/` now carries the ownership
+consolidation and the concentration analysis of *Rural Land Concentration &
+Protected Areas* (Society & Natural Resources 35(6), 2022), whose online
+supplement is the methodology document in `docs/reference/`. Definitions,
+choices and the Table 1 regression baseline are in `docs/holdings_definitions.md`.
+
+| stage | module | output |
+|---|---|---|
+| 8 | `timeseries/identity.py` | `data/identity/owners_<date>`, `groups_<date>`: strict / document / maximal tiers, review flags |
+| 9 | `timeseries/tenure_area.py` | `data/tenure/area_<date>`: public fraction per parcel by area overlap |
+| 10 | `timeseries/holdings.py` | `data/facts/holdings_{county,state,top,review}`: 640+ acre holdings, CLO4, top-N, Lorenz/Gini |
+| -- | `timeseries/regress.py` | `data/facts/regression_table1.csv`: residuals against the paper's Table 1 |
+
+```bash
+.venv/bin/python -m timeseries.extract          # now carries owner_addr_norm (+ generic / care-of flags)
+.venv/bin/python -m timeseries.identity         # --overrides owner_overrides.csv to apply reviews
+.venv/bin/python -m timeseries.tenure_area      # ~5 min per snapshot; holdings falls back to the point method without it
+.venv/bin/python -m timeseries.holdings
+.venv/bin/python -m timeseries.regress
+.venv/bin/python -m timeseries.publish && (cd site && npm run build)
+```
+
+The identity rule is the document's: the mailing address keys an owner, names
+bridge entities and couples across addresses, and everything the document
+leaves to a reviewer is carried as a flag and shown in the dashboard's Review
+view as a range between the document tier and the maximal tier.
+
 ## Module map
 
 | file | responsibility |
@@ -102,6 +131,10 @@ Statewide `Montana_consolidated.gpkg`: `owners_dissolved_statewide` (by
 | `cadastral/dissolve.py` | geometry repair, dissolve, area recompute |
 | `cadastral/orion.py` | ORION cache reader, party profiles, resolver, deeds |
 | `orion_etl.py` | one-time ORION SQL Server -> Parquet ETL + profiler |
+| `timeseries/identity.py` | owner identity tiers + review flags per snapshot |
+| `timeseries/tenure_area.py` | public-land area overlap per parcel |
+| `timeseries/holdings.py` | large-holding and concentration metrics |
+| `timeseries/regress.py` | regression against the published Table 1 |
 
 ## ORION integration (DOR CAMA database)
 

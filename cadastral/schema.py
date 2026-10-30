@@ -24,9 +24,14 @@ FIELD_ALIASES: dict[str, list[str]] = {
     "county_name": ["CountyName", "COUNTYNAME", "COUNTY"],
     "owner_name": ["OwnerName", "OWNR_NAM1", "OWNERNAME"],
     "owner_name_2": ["OWNR_NAM2", "OwnerName2"],
-    "owner_address_1": ["OwnerAddress1", "OwnerAddre", "OwnerAdd_1", "MAIL_ADDR"],
-    "owner_address_2": ["OwnerAddress2", "OwnerAdd_2"],
-    "owner_address_3": ["OwnerAddress3", "OwnerAdd_3"],
+    # Shapefile truncation of OwnerAddress1/2/3 yields OwnerAddre, OwnerAdd_1,
+    # OwnerAdd_2 in that order. Measured on 2026-09-04: 98.1% / 10.0% / 0.5%
+    # populated, and when line 1 is a "MAIL TO ..." instruction the street sits
+    # in OwnerAdd_1. The earlier aliasing read line 3 as line 2 and skipped
+    # line 2 entirely, which breaks any address-keyed identity.
+    "owner_address_1": ["OwnerAddress1", "OwnerAddre", "MAIL_ADDR"],
+    "owner_address_2": ["OwnerAddress2", "OwnerAdd_1"],
+    "owner_address_3": ["OwnerAddress3", "OwnerAdd_2"],
     "owner_city": ["OwnerCity", "MAILCITY", "OWNERCITY"],
     "owner_state": ["OwnerState", "OWNERSTATE"],
     "owner_zip": ["OwnerZipCode", "OwnerZipCo", "OWNERZIP"],

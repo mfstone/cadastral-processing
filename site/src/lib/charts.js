@@ -475,3 +475,36 @@ export function card(host, title, caption) {
   host.appendChild(c);
   return c;
 }
+
+/* ------------------------------------------------------------------- table */
+/** A visible data table (the chart table-views are collapsed by default). */
+export function table(host, { headers, rows, caption, html = false }) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tablewrap';
+  if (caption) {
+    const c = document.createElement('div');
+    c.className = 'cap';
+    c.textContent = caption;
+    wrap.appendChild(c);
+  }
+  const t = document.createElement('table');
+  t.className = 'data';
+  const thead = t.createTHead().insertRow();
+  for (const h of headers) {
+    const th = document.createElement('th');
+    th.textContent = h;
+    thead.appendChild(th);
+  }
+  const tb = t.createTBody();
+  for (const r of rows) {
+    const tr = tb.insertRow();
+    r.forEach((c) => {
+      const td = tr.insertCell();
+      if (html && typeof c === 'string' && c.startsWith('<')) td.innerHTML = c;
+      else td.textContent = c;
+    });
+  }
+  wrap.appendChild(t);
+  host.appendChild(wrap);
+  return wrap;
+}

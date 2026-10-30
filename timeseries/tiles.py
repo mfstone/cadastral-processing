@@ -61,6 +61,7 @@ import numpy as np
 import pandas as pd
 
 from . import geocode as gc
+from . import holdings
 from . import locality
 from . import ownerclass as oc
 from . import sources
@@ -84,7 +85,7 @@ FILE_CAP = 20_000     # Cloudflare Pages deployment limit
 # never invent a finding: undeveloped, unknown vintage, private, most-distant
 # owner locality.
 DEFAULTS = (("dev", 0), ("born", -1), ("ac", 0.0), ("ten", 2), ("loc", 4),
-            ("res", 0), ("cnd", 0))
+            ("res", 0), ("cnd", 0), ("hs", -1), ("hr", 0), ("hp", 0))
 
 
 def build_source(date: str, path: str) -> gpd.GeoDataFrame:
@@ -135,8 +136,38 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
                    np.where(p["has_house_number"].fillna(False), 1, 0)).astype("int8")
     dev[imp == -1] = -1
 
+    # The owner's consolidated holding within the county (stage 10), so the
+    # parcel layer can draw the paper's Figure 1: large private holdings and
+    # the four largest per county. Only a size class, a rank and a review flag
+    # reach the tile -- never a name.
+    hs = pd.Series(-1, index=p.index, dtype="int8")
+    hr = pd.Series(0, index=p.index, dtype="int8")
+    hp = pd.Series(0, index=p.index, dtype="int8")
+    id_path = f"{holdings.ID_DIR}/owners_{date}.parquet"
+    if os.path.exists(id_path):
+        dpriv, _qa = holdings.load_private_parcels(date)
+        hc = holdings._holdings(dpriv, by_county=True)
+        big = hc[hc["large"]].sort_values(["county_n", "acres"], ascending=[True, False])
+        big = big.assign(rank=big.groupby("county_n").cumcount() + 1)
+        hc = hc.merge(big[["county_n", "group_id", "rank"]], on=["county_n", "group_id"], how="left")
+        key = hc.set_index(["county_n", "group_id"])
+        own = pd.read_parquet(id_path, columns=["parcel_id", "group_id"]).set_index("parcel_id")["group_id"]
+        gid = p["parcel_id"].map(own)
+        idx = pd.MultiIndex.from_arrays([p["county_n"].to_numpy(), gid.fillna(-1).astype("int64").to_numpy()])
+        hs = pd.Series(key["size_class"].reindex(idx).fillna(-1).to_numpy().astype("int8"), index=p.index)
+        rk = key["rank"].reindex(idx).fillna(0).to_numpy()
+        hr = pd.Series(np.where(rk <= 4, rk, 0).astype("int8"), index=p.index)
+        hp = pd.Series(key["strong"].reindex(idx).fillna(False).to_numpy().astype("int8"), index=p.index)
+        log.info("holdings joined: %s parcels in large holdings, %s in a county top-4",
+                 f"{int((hs >= 1).sum()):,}", f"{int((hr > 0).sum()):,}")
+    else:
+        log.warning("no identity output for %s; holding attributes default", date)
+
     attrs = pd.DataFrame({
         "parcel_id": p["parcel_id"],
+        "hs": hs,                                              # holding size class, -1 not private
+        "hr": hr,                                              # rank among the county's largest, 1-4
+        "hp": hp,                                              # 1 = holding awaits a review decision
         "dev": dev,                                            # 0 platted 1 addressed 2 built
         "born": p["first_idx"].fillna(-1).astype("int16"),      # snapshot index first seen
         "ac": p["acres"].fillna(0).round(1).astype("float32"),

@@ -237,6 +237,56 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
                 d[c] = d[c].astype(str)
         files[name] = _write(d, os.path.join(out_dir, f"{name}.parquet"))
 
+    # ---- large private holdings (stage 10). County grain only -- the paper's
+    # unit -- with county_n 0 carrying the statewide row. The top-holdings
+    # table carries owner names: the only place the payload does, because a
+    # review cannot be done against a hash. See docs/holdings_definitions.md.
+    hold_meta = {}
+    hc_path = os.path.join(FACT_DIR, "holdings_county.parquet")
+    if os.path.exists(hc_path):
+        hc = pd.concat([pd.read_parquet(hc_path), pd.read_parquet(os.path.join(FACT_DIR, "holdings_state.parquet"))],
+                       ignore_index=True)
+        hc["s"] = hc["snapshot"].map(snap_id)
+        hc = hc[hc["s"].notna()].copy()
+        hc["s"] = hc["s"].astype("int8")
+        hcols = [c for c in hc.columns if c not in ("snapshot", "s", "county_n")]
+        files["holdings_county"] = _write(hc[["county_n", "s"] + hcols],
+                                          os.path.join(out_dir, "holdings_county.parquet"))
+        top = pd.read_parquet(os.path.join(FACT_DIR, "holdings_top.parquet"))
+        top["s"] = top["snapshot"].map(snap_id)
+        top = top[top["s"].notna()].copy()
+        top["s"] = top["s"].astype("int8")
+        for c in ("strong", "token", "conflict", "oos", "is_entity"):
+            top[c] = top[c].fillna(False).astype("int8")
+        top["review_status"] = top["review_status"].fillna(0).astype("int8")
+        tcols = ["county_n", "s", "rank", "display_name", "display_city", "display_state", "acres",
+                 "acres_if_merged", "n_parcels", "is_entity", "review_status", "n_names",
+                 "pending_links", "strong", "token", "conflict", "oos", "group_hash"]
+        files["holdings_top"] = _write(top[tcols], os.path.join(out_dir, "holdings_top.parquet"))
+        rv = pd.read_parquet(os.path.join(FACT_DIR, "holdings_review.parquet"))
+        rv["s"] = rv["snapshot"].map(snap_id)
+        rv = rv[rv["s"].notna()].copy()
+        rv["s"] = rv["s"].astype("int8")
+        files["holdings_review"] = _write(rv[["county_n", "s", "review_status", "owners", "acres"]],
+                                          os.path.join(out_dir, "holdings_review.parquet"))
+        hq_path = os.path.join(FACT_DIR, "qa_holdings.json")
+        if os.path.exists(hq_path):
+            hq = json.load(open(hq_path))
+            hold_meta["tenure_method"] = {r["date"]: r.get("tenure_method") for r in hq}
+            hold_meta["tenure_conflicts"] = {r["date"]: r.get("tenure_conflicts") for r in hq}
+        rg_path = os.path.join(FACT_DIR, "regression_table1.csv")
+        if os.path.exists(rg_path):
+            rg = pd.read_csv(rg_path)
+            hold_meta["regression"] = [
+                {"snapshot": d, "counties": int(len(g)),
+                 "paper_large_acres": float(g["T1_large_acres"].sum()),
+                 "document_large_acres": float(g["doc_large_acres"].sum()),
+                 "maximal_large_acres": float(g["max_large_acres"].sum()),
+                 "paper_owners": int(g["T1_owners"].sum()),
+                 "document_owners": int(g["doc_owners"].sum()),
+                 "maximal_owners": int(g["max_owners"].sum())}
+                for d, g in rg.groupby("snapshot")]
+
     # ---- geometry
     for g in ("townships.geojson", "counties.geojson",
               "reservations.geojson", "publiclands.geojson"):
@@ -279,6 +329,10 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
             "owner_class": oc.CLASSES,
             "dev_stage": ["platted_only", "addressed_not_built", "built", "unknown"],
             "owner_origin": STATE_BUCKETS,
+            "holding_size": ["<640", "640-2,560", "2,560-10,000", "10,000-50,000", ">50,000"],
+            "review_status": ["clean", "merged by entity name", "name-token check",
+                              "flagged for review", "reviewed: merged", "merged by ORION party id",
+                              "reviewed: kept separate"],
         },
         "delta_coded": bool(delta),
     }
@@ -321,6 +375,7 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
                     ("dormant_parcels_total", "dormant_lt40ac_total",
                      "dormant_lt40ac_acres", "dormant_note") if k in lad},
         "thresholds": lad.get("thresholds", {}).get("edge_tests"),
+        "holdings": hold_meta,
         "caveats": [
             "2002 is excluded: it lacks Silver Bow, Yellowstone, Missoula, "
             "Gallatin and Flathead, exactly where parcels are created.",
@@ -344,6 +399,11 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
             "not zero.",
             "Events are inferred. 'Subdivision' is reserved for events "
             "corroborated by a subdivision or certificate-of-survey name.",
+            "Holdings follow Haggerty et al. (2022): an owner's consolidated "
+            "private acreage within a county, keyed on the mailing address with "
+            "name bridges for entities and couples. The manual review the method "
+            "requires is shown as a range (document tier to maximal tier) and as "
+            "flags, never assumed.",
         ],
         "files": files,
     }

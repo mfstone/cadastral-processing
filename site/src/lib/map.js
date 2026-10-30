@@ -145,7 +145,7 @@ export class UnitMap {
       promoteId: 'id',
     });
     m.addLayer({
-      id: 'parcel-fill', type: 'fill', source: 'parcels', 'source-layer': 'parcels_mt',
+      id: 'parcel-fill', type: 'fill', source: 'parcels', 'source-layer': 'parcels',
       minzoom: 10,
       paint: {
         'fill-color': getComputedStyle(document.documentElement)
@@ -154,12 +154,12 @@ export class UnitMap {
       },
     });
     m.addLayer({
-      id: 'parcel-line', type: 'line', source: 'parcels', 'source-layer': 'parcels_mt',
+      id: 'parcel-line', type: 'line', source: 'parcels', 'source-layer': 'parcels',
       minzoom: 12.5,
       paint: { 'line-color': mapLine(), 'line-width': 0.4, 'line-opacity': 0.55 },
     });
     m.addLayer({
-      id: 'parcel-hl', type: 'line', source: 'parcels', 'source-layer': 'parcels_mt',
+      id: 'parcel-hl', type: 'line', source: 'parcels', 'source-layer': 'parcels',
       minzoom: 10,
       filter: ['==', ['get', 'born'], -999],
       paint: { 'line-color': cssv('--cat-2'), 'line-width': 1.6 },

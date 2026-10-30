@@ -25,6 +25,7 @@ const DATA = [
   'absorption.parquet', 'size_histogram.parquet', 'dormant.parquet',
   'owner_state/CA.parquet', 'reservation_stock.parquet',
   'reservations.geojson', 'publiclands.geojson',
+  'holdings_county.parquet', 'holdings_top.parquet', 'holdings_review.parquet',
 ];
 
 console.log(`\nsmoke: ${BASE}\n`);
@@ -83,7 +84,7 @@ const subText = await page.$eval('#sub', (e) => e.textContent.trim());
 ok('header reports the series', /29 vintages/.test(subText), subText);
 
 const views = await page.$$eval('#nav button', (bs) => bs.map((b) => b.textContent.trim()));
-ok('all five views present', views.length === 5, views.join(', '));
+ok('all seven views present', views.length === 7, views.join(', '));
 
 // Map rendered something.
 const canvas = await page.$('#map canvas');

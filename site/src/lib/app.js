@@ -226,6 +226,20 @@ function parcelStyle() {
     case 'churn':
       return [['match', ['get', 'ten'],
         0, masked, 1, masked, 2, ord3[1], masked], bornHere];
+    case 'holdings':
+      // The paper's Figure 1 at parcel scale: the four largest holdings in the
+      // county, other large holdings, small private, and public/tribal muted.
+      return [['case',
+        ['>', ['coalesce', ['get', 'hr'], 0], 0], cssVar('--statute'),
+        ['>=', ['coalesce', ['get', 'hs'], -1], 1], ord5[3],
+        ['==', ['coalesce', ['get', 'hs'], -1], 0], ord5[0],
+        masked], null];
+    case 'review':
+      return [['case',
+        ['all', ['>=', ['coalesce', ['get', 'hs'], -1], 1], ['==', ['coalesce', ['get', 'hp'], 0], 1]], cssVar('--statute'),
+        ['>=', ['coalesce', ['get', 'hs'], -1], 1], ord5[3],
+        ['==', ['coalesce', ['get', 'hs'], -1], 0], ord5[0],
+        masked], null];
     case 'thresholds':
       // The 20-acre statutory line, drawn on the parcels themselves.
       return [['step', ['get', 'ac'],
@@ -243,6 +257,10 @@ const PARCEL_LEGEND = {
   churn: [['private parcel', 'ord3-2']],
   thresholds: [['under 20 ac', 'ord5-1'], ['20-40 ac (above the DEQ line)', 'statute'],
                ['40-160', 'ord5-3'], ['over 160', 'ord5-5']],
+  holdings: [['four largest holdings in the county', 'statute'], ['other 640+ ac holding', 'ord5-4'],
+             ['private, under 640 ac', 'ord5-1'], ['public or tribal', 'masked']],
+  review: [['holding awaits a review decision', 'statute'], ['640+ ac holding, clean', 'ord5-4'],
+           ['private, under 640 ac', 'ord5-1'], ['public or tribal', 'masked']],
 };
 
 function applyParcelStyle() {
@@ -721,6 +739,296 @@ VIEWS.thresholds = {
   },
 };
 
+/* ------------------------------------------------------------ holdings */
+/*
+   6 and 7. Large private holdings and their review -- Haggerty et al. (2022).
+
+   The unit is the county, the paper's unit, so both views force the county
+   level. county_n 0 carries the statewide row, used when nothing is selected.
+   Ratios (CLO4, Gini, top shares) are per county and cannot be summed over a
+   selection, so a multi-county selection draws them as small multiples while
+   the counts and acres are summed.
+*/
+async function holdingsCube() {
+  if (S.cubes.holdings) return S.cubes.holdings;
+  const t = await loadTable('holdings_county');
+  S.cubes.holdings = cube(t, { nUnits: 57, nSnaps: S.nSnaps, keyCol: 'county_n', snapCol: 's', delta: false });
+  return S.cubes.holdings;
+}
+const hAt = (c, m, u, s) => c.data[m]?.[u * c.nSnaps + s] ?? 0;
+const holdingUnits = () => (S.selection.size && S.level === 'county' ? Array.from(S.selection) : [0]);
+const countyLabel = (u) => (u === 0 ? 'Montana' : (S.dim.counties.find((c) => c.code === u)?.name ?? String(u)));
+
+function forceCounty() {
+  if (S.level === 'county') return;
+  S.level = 'county';
+  const sel = $('level');
+  if (sel) sel.value = 'county';
+  S.selection.clear();
+  S.map.setLevel('county');
+  S.map.setSelection(new Set());
+}
+function holdNote() {
+  const u = holdingUnits();
+  if (u.length === 1 && u[0] === 0) return 'Statewide. Click a county to focus; shift-click to add. Holdings are consolidated within each county, as in the paper.';
+  return `${u.length} count${u.length > 1 ? 'ies' : 'y'}: ${u.map(countyLabel).join(', ')}`;
+}
+const STATUS_TOK = ['cat-1', 'ord3-2', 'statute', 'statute', 'cat-3', 'cat-1', 'cat-3'];
+function statusBadge(code) {
+  const lab = S.dim.labels.review_status[code] || '';
+  return `<span class="badge" style="border-color:var(--${STATUS_TOK[code] || 'axis'})">${lab}</span>`;
+}
+function reasonList(r) {
+  const out = [];
+  if (r.strong) out.push('shared name or address needs a decision');
+  if (r.token) out.push('name-token match');
+  if (r.conflict) out.push('point and area tenure disagree');
+  if (r.oos) out.push('out-of-state');
+  return out.join('; ');
+}
+async function topRows(units, s) {
+  const t = await loadTable('holdings_top');
+  const col = (n) => t.columns.indexOf(n);
+  const ci = col('county_n'), si = col('s');
+  const want = new Set(units);
+  const rows = [];
+  for (const r of t.rows) {
+    if (Number(r[si]) !== s || !want.has(Number(r[ci]))) continue;
+    rows.push({
+      county: Number(r[ci]), rank: Number(r[col('rank')]), name: r[col('display_name')],
+      city: r[col('display_city')], state: r[col('display_state')],
+      acres: Number(r[col('acres')]), acresMax: Number(r[col('acres_if_merged')]),
+      parcels: Number(r[col('n_parcels')]), status: Number(r[col('review_status')]),
+      names: Number(r[col('n_names')]), links: Number(r[col('pending_links')]),
+      strong: Number(r[col('strong')]) > 0, token: Number(r[col('token')]) > 0,
+      conflict: Number(r[col('conflict')]) > 0, oos: Number(r[col('oos')]) > 0,
+      hash: r[col('group_hash')],
+    });
+  }
+  return rows.sort((a, b) => b.acres - a.acres);
+}
+
+VIEWS.holdings = {
+  parcelLegend: 'owner\u2019s holding in the county',
+  label: 'Holdings',
+  legend: 'Four-property concentration ratio (CLO4), % of large-holding acreage',
+  async render(panel) {
+    forceCounty();
+    const h = await holdingsCube();
+    paintFrom(h, countyIds(), (c, u, s) => {
+      const n = hAt(c, 'large_owners', u, s);
+      return n >= 4 ? 100 * hAt(c, 'clo4', u, s) : null;
+    });
+    const units = holdingUnits();
+    const s = S.snap;
+    const ser = (m) => seriesOf(h, m, units);
+    const la = ser('large_acres'), lo = ser('large_owners');
+    const lam = ser('large_acres_max'), lom = ser('large_owners_max');
+    const prov = ser('large_provisional'), provAc = ser('large_provisional_acres');
+    const oosAc = ser('large_oos_acres'), oosN = ser('large_oos_owners');
+    const pa = ser('private_acres');
+
+    C.stats(C.card(panel, 'Large private holdings at the selected snapshot', holdNote()), [
+      { value: C.fmtInt(lo[s]), label: 'owners holding 640+ acres',
+        detail: `${C.fmtInt(lom[s])} if every pending review were accepted` },
+      { value: C.fmtAc(la[s]), label: 'acres in large holdings',
+        detail: `${C.fmtPct(pa[s] ? (100 * la[s]) / pa[s] : NaN)} of private acreage · up to ${C.fmtAc(lam[s])}` },
+      { value: `${C.fmtInt(lo[s] ? la[s] / lo[s] : NaN)} ac`, label: 'mean large holding' },
+      { value: C.fmtPct(la[s] ? (100 * oosAc[s]) / la[s] : NaN), label: 'of large acreage mailed out of state',
+        detail: `${C.fmtInt(oosN[s])} owners` },
+      { value: C.fmtInt(prov[s]), label: 'large holdings awaiting review',
+        detail: `${C.fmtAc(provAc[s])} rests on an unmade decision` },
+    ]);
+
+    const xl = snapLabels();
+    const k1 = C.card(panel, 'Owners of large holdings',
+      'The document tier applies the consolidation rule as far as it can be automated; the maximal tier accepts every pending review flag. The paper’s manual pass lands between them.');
+    C.lineChart(k1, {
+      series: [lo, lom], labels: ['document tier', 'maximal tier'],
+      colors: [cssVar('--cat-3'), cssVar('--ord3-2')], xLabels: xl, fmt: C.fmtInt,
+      caption: 'Owners of 640+ acre private holdings',
+    });
+    const k2 = C.card(panel, 'Acreage in large holdings and its mean',
+      'Fewer owners holding more acreage is the concentration signature the paper reports: a 6.4% fall in owners and a 7% rise in mean holding across its 13 counties, 2005 to 2018.');
+    C.lineChart(k2, {
+      series: [la, lam], labels: ['document tier', 'maximal tier'],
+      colors: [cssVar('--cat-3'), cssVar('--ord3-2')], xLabels: xl, fmt: C.fmtAc,
+      caption: 'Acres in large holdings',
+    });
+    const mean = Float64Array.from(la, (v, i) => (lo[i] ? v / lo[i] : NaN));
+    C.lineChart(k2, {
+      series: [mean], labels: ['mean large holding'], colors: [cssVar('--cat-1')],
+      xLabels: xl, fmt: C.fmtAc, caption: 'Mean size of a large holding',
+    });
+
+    // CLO4 and the gap: per-county ratios.
+    const k3 = C.card(panel, 'Four-property concentration ratio (CLO4)',
+      'Share of a county’s large-holding acreage held by its four largest holdings (Desmarais et al. 2015, as used by the paper). Averaged over the paper’s counties it rose from 14% to 16%.');
+    if (units.length === 1) {
+      const u = units[0];
+      const clo = Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'clo4', u, i));
+      C.lineChart(k3, { series: [clo], labels: ['CLO4'], colors: [cssVar('--cat-3')], xLabels: xl,
+        fmt: (v) => C.fmtPct(v, 1), caption: `CLO4, ${countyLabel(u)}` });
+      const t1 = Float64Array.from({ length: S.nSnaps }, (_, i) => hAt(h, 'top1_acres', u, i));
+      const t2 = Float64Array.from({ length: S.nSnaps }, (_, i) => hAt(h, 'top2_acres', u, i));
+      C.lineChart(k3, { series: [t1, t2], labels: ['largest holding', 'second largest'],
+        colors: [cssVar('--cat-3'), cssVar('--cat-2')], xLabels: xl, fmt: C.fmtAc,
+        caption: 'The two largest holdings' });
+    } else {
+      C.smallMultiples(k3, {
+        facets: units.slice(0, 8).map((u) => ({ label: countyLabel(u),
+          values: Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'clo4', u, i)) })),
+        xLabels: xl, color: cssVar('--cat-3'), yMax: 100, caption: 'CLO4 by selected county', cols: 2,
+      });
+    }
+
+    // County ranking at the snapshot.
+    const items = countyIds().map((u) => ({ label: countyLabel(u), value: 100 * hAt(h, 'clo4', u, s), n: hAt(h, 'large_owners', u, s) }))
+      .filter((x) => x.n >= 4).sort((a, b) => b.value - a.value).slice(0, 14);
+    const k4 = C.card(panel, 'Counties ranked by CLO4', 'Counties with fewer than four large holdings are omitted.');
+    C.rankBars(k4, { items, color: cssVar('--cat-3'), fmt: (v) => C.fmtPct(v, 0), caption: 'CLO4 by county', max: 100 });
+
+    // Size classes of holdings.
+    const labs = S.dim.labels.holding_size;
+    const pre = S.measure === 'acres' ? 'ac_' : 'n_';
+    const keys = ['lt640', '640_2560', '2560_10k', '10k_50k', 'gt50k'];
+    const k5 = C.card(panel, 'Private holdings by size class',
+      'Consolidated holding size, not parcel size. Classes are anchored on aliquot multiples: a section, four sections, roughly sixteen.');
+    C.stackedArea(k5, {
+      series: keys.map((k) => ser(pre + k)), labels: labs, colors: C.ramp('ord5', 5),
+      xLabels: xl, share: true, fmt: S.measure === 'acres' ? C.fmtAc : C.fmtInt,
+      caption: 'Holding size-class composition',
+    });
+
+    // Concentration across all private holdings.
+    const k6 = C.card(panel, 'Concentration across all private holdings',
+      'Share of private acreage held by the largest 1% and 10% of holdings, and the Gini coefficient. These go beyond the paper and are labelled as our measures.');
+    if (units.length === 1) {
+      const u = units[0];
+      const p1 = Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'top1pct_share', u, i));
+      const p10 = Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'top10pct_share', u, i));
+      const gi = Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'gini_private', u, i));
+      C.lineChart(k6, { series: [p1, p10, gi], labels: ['top 1% of holdings', 'top 10%', 'Gini × 100'],
+        colors: [cssVar('--cat-3'), cssVar('--cat-2'), cssVar('--cat-1')], xLabels: xl,
+        fmt: (v) => C.fmtPct(v, 0), yMax: 100, caption: 'Concentration measures' });
+    } else {
+      C.smallMultiples(k6, {
+        facets: units.slice(0, 8).map((u) => ({ label: countyLabel(u),
+          values: Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'top10pct_share', u, i)) })),
+        xLabels: xl, color: cssVar('--cat-2'), yMax: 100, caption: 'Share held by the top 10% of holdings', cols: 2,
+      });
+    }
+
+    // The largest holdings, named.
+    const rows = await topRows(units.length > 1 ? units : [units[0]], s);
+    const k7 = C.card(panel, `Largest holdings, ${units.length === 1 ? countyLabel(units[0]) : 'selected counties'}`,
+      'Owner of record from the cadastral, public record. A range means the holding rests on a review that has not been made; the second figure is its reach if every pending flag were accepted.');
+    C.table(k7, {
+      headers: ['#', 'owner of record', 'mails from', 'acres', 'parcels', 'status'],
+      rows: rows.slice(0, units.length > 1 ? 20 : 10).map((r, i) => [
+        String(i + 1), r.name, `${r.city || ''}${r.state ? ', ' + r.state : ''}`,
+        r.acresMax > r.acres * 1.001 ? `${C.fmtInt(r.acres)} – ${C.fmtInt(r.acresMax)}` : C.fmtInt(r.acres),
+        C.fmtInt(r.parcels), statusBadge(r.status)]),
+      caption: 'Largest private holdings at the selected snapshot', html: true,
+    });
+    await regressionCard(panel);
+  },
+};
+
+async function regressionCard(panel) {
+  const rg = S.meta.holdings && S.meta.holdings.regression;
+  if (!rg || !rg.length) return;
+  const c = C.card(panel, 'Against the published Table 1',
+    'Haggerty et al. (2022) report 13 counties for 2005 and 2018. Their homogenization included a manual pass that cannot be replayed, so the test is whether the paper’s figure lies between the document and maximal tiers.');
+  C.table(c, {
+    headers: ['snapshot', 'paper acres', 'document', 'maximal', 'paper owners', 'document', 'maximal'],
+    rows: rg.map((r) => [r.snapshot, C.fmtInt(r.paper_large_acres), C.fmtInt(r.document_large_acres),
+      C.fmtInt(r.maximal_large_acres), C.fmtInt(r.paper_owners), C.fmtInt(r.document_owners), C.fmtInt(r.maximal_owners)]),
+    caption: '13-county totals of acres and owners in 640+ acre private holdings',
+  });
+}
+
+VIEWS.review = {
+  parcelLegend: 'review status of the owner\u2019s holding',
+  label: 'Review',
+  legend: 'Large holdings awaiting review, % of large holdings',
+  async render(panel) {
+    forceCounty();
+    const h = await holdingsCube();
+    paintFrom(h, countyIds(), (c, u, s) => {
+      const n = hAt(c, 'large_owners', u, s);
+      return n >= 4 ? (100 * hAt(c, 'large_provisional', u, s)) / n : null;
+    });
+    const units = holdingUnits();
+    const s = S.snap;
+    const ser = (m) => seriesOf(h, m, units);
+    const lo = ser('large_owners'), la = ser('large_acres'), lam = ser('large_acres_max');
+    const prov = ser('large_provisional'), provAc = ser('large_provisional_acres');
+    const tok = ser('large_token'), conf = ser('large_conflict');
+
+    C.stats(C.card(panel, 'What a reviewer would change', holdNote()), [
+      { value: C.fmtInt(prov[s]), label: 'large holdings flagged',
+        detail: `${C.fmtPct(lo[s] ? (100 * prov[s]) / lo[s] : NaN)} of large holdings · ${C.fmtAc(provAc[s])}` },
+      { value: C.fmtInt(tok[s]), label: 'with a name-token check only' },
+      { value: C.fmtAc(lam[s] - la[s]), label: 'acreage the pending merges would add',
+        detail: 'document tier to maximal tier' },
+      { value: C.fmtInt(conf[s]), label: 'large holdings on a disputed parcel',
+        detail: 'the point and area methods classify one of its parcels differently' },
+    ]);
+
+    // Review composition among large holdings, over time.
+    let t;
+    try { t = await loadTable('holdings_review'); } catch { t = null; }
+    if (t) {
+      const col = (n) => t.columns.indexOf(n);
+      const ci = col('county_n'), si = col('s'), ri = col('review_status'), oi = col('owners'), ai = col('acres');
+      const want = new Set(units);
+      const nS = S.nSnaps;
+      const series = [0, 1, 2, 3, 4, 5, 6].map(() => new Float64Array(nS));
+      for (const r of t.rows) {
+        const u = Number(r[ci]), sn = Number(r[si]), st = Number(r[ri]);
+        if (!want.has(u) || !(sn >= 0 && sn < nS) || !(st >= 0 && st < 7)) continue;
+        series[st][sn] += Number(S.measure === 'acres' ? r[ai] : r[oi]) || 0;
+      }
+      const k = C.card(panel, 'Review status of large holdings',
+        'Clean holdings rest on an exact address and name. Entity-name merges follow the document’s rule for companies and trusts. Token checks and flags are the document’s CHECK and FALSE cases, waiting on a decision.');
+      C.stackedArea(k, {
+        series, labels: S.dim.labels.review_status,
+        colors: [cssVar('--cat-1'), cssVar('--ord3-2'), cssVar('--ord5-3'), cssVar('--statute'), cssVar('--cat-3'), cssVar('--seq-6'), cssVar('--seq-3')],
+        xLabels: snapLabels(), share: true, fmt: S.measure === 'acres' ? C.fmtAc : C.fmtInt,
+        caption: 'Large holdings by review status',
+      });
+    }
+
+    const rows = (await topRows(units, s)).filter((r) => r.status >= 2 || r.strong || r.conflict)
+      .sort((a, b) => (b.acresMax - b.acres) - (a.acresMax - a.acres) || b.acres - a.acres);
+    const k2 = C.card(panel, 'Largest holdings that rest on an unmade decision',
+      'Ordered by the acreage at stake. Resolve a row by adding a merge or keep line to owner_overrides.csv and re-running the identity stage; the reviewer, date and reason travel into the next publish.');
+    C.table(k2, {
+      headers: ['owner of record', 'mails from', 'acres', 'if merged', 'parcels', 'names', 'status', 'why', 'group'],
+      rows: rows.slice(0, 25).map((r) => [r.name, `${r.city || ''}${r.state ? ', ' + r.state : ''}`,
+        C.fmtInt(r.acres), C.fmtInt(r.acresMax), C.fmtInt(r.parcels), String(r.names),
+        statusBadge(r.status), reasonList(r), r.hash]),
+      caption: 'Flagged large holdings at the selected snapshot', html: true,
+    });
+    if (!rows.length) {
+      const d = document.createElement('div');
+      d.className = 'caveat';
+      d.textContent = 'No flagged large holdings among the top-ranked holdings here. Smaller flagged holdings exist; the published list is capped at the ten largest per county.';
+      k2.appendChild(d);
+    }
+    const how = C.card(panel, 'How a review is recorded');
+    const d = document.createElement('div');
+    d.className = 'caveat';
+    d.innerHTML = 'The pipeline never merges two owners on a judgment call. A reviewer records one in '
+      + '<code>owner_overrides.csv</code> as <code>merge</code> (join these ids into one group) or '
+      + '<code>keep</code> (looked, kept separate), with a reason and date. Ids accepted: the strict id, '
+      + 'the address-key id, or the group hash shown in the last column. The identity stage applies the '
+      + 'file on its next run and marks the result <em>reviewed</em>.';
+    how.appendChild(d);
+  },
+};
+
 function maskLowCoverage(cov) {
   if (!S.maskLow) return null;
   return (u) => {
@@ -778,6 +1086,7 @@ function buildControls() {
       for (const o of nav.children) o.setAttribute('aria-selected', String(o === b));
       $('erawrap').hidden = k !== 'thresholds';
       $('originwrap').hidden = k !== 'ownership';
+      $('level').disabled = (k === 'holdings' || k === 'review');
       render();
     });
     nav.appendChild(b);
@@ -902,6 +1211,12 @@ export async function boot() {
         ['owner distance', L.locality[Number(props.loc)] || '-'],
         ['created', bornTxt],
       ];
+      if (props.hs != null && Number(props.hs) >= 0) {
+        const cls = (L.holding_size || [])[Number(props.hs)] || '';
+        rows.push(['owner\u2019s holding', `${cls} ac in this county`
+          + (Number(props.hr) > 0 ? ` \u00b7 #${Number(props.hr)} largest` : '')
+          + (Number(props.hp) ? ' \u00b7 awaiting review' : '')]);
+      }
       if (Number(props.res)) rows.push(['', 'inside a reservation']);
       if (Number(props.cnd)) rows.push(['', 'condominium unit']);
       box.innerHTML = `<span class="x" id="pi-x">\u00d7</span>`

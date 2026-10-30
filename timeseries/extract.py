@@ -63,6 +63,7 @@ EXTRACT_FIELDS = [
     "parcel_id", "county_code", "county_code_alpha",
     "owner_name", "owner_name_2",
     "owner_state", "owner_city", "owner_citystatezip", "mail_state", "mail_city",
+    "owner_address_1", "owner_address_2", "owner_address_3",
     "gis_acres", "area_sqm",
     "subdivision", "cert_survey", "property_type", "build_value", "land_value",
     "owner_class", "owner_gen_descrip", "res_prop_ind",
@@ -212,6 +213,7 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
 
     rec = ow.record_fields(df.loc[valid], res)
     qa["state_mechanism"] = rec.attrs.get("state_mechanism")
+    qa["address_mechanism"] = rec.attrs.get("address_mechanism")
     v = v.join(rec)
 
     for logical, name in (("subdivision", "subdivision"), ("cert_survey", "cert_survey"),
@@ -260,6 +262,8 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
             v["has_house_number"] = ((num != "") & (num.str.replace("0", "") != "")).to_numpy(dtype=bool)
         else:
             v["has_house_number"] = clean.str.match(r"^\d").fillna(False).to_numpy(dtype=bool)
+    qa["pct_with_mailing_addr"] = round(100.0 * float((v["owner_addr_norm"] != "").mean()), 3)
+    qa["pct_generic_mailing_addr"] = round(100.0 * float(v["owner_addr_generic"].mean()), 3)
     qa["pct_with_situs_addr"] = round(100.0 * float(v["has_situs_addr"].mean()), 3)
     qa["pct_with_house_number"] = round(100.0 * float(v["has_house_number"].mean()), 3)
 
@@ -313,7 +317,8 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
                   "owner_is_entity", "owner_state",
                   "owner_state_valid", "owner_in_state", "subdivision", "cert_survey",
                   "property_type", "situs_city", "owner_class", "owner_gen_descrip",
-                  "res_prop_ind", "owner_city", "owner_zip5"]
+                  "res_prop_ind", "owner_city", "owner_zip5",
+                  "owner_addr_norm", "owner_addr_generic", "owner_addr_careof"]
     for c in first_cols:
         agg[c] = (c, "first")
     parcels = grouped.agg(**agg)
