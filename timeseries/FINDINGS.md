@@ -494,3 +494,84 @@ acreage and leaves every one of those sections standing; 60 m simplification is
 at parcel zoom a visibly wrong boundary beside crisp parcel edges would cost more
 than the bytes are worth. The before/after renders differ by 1.3% of pixels at
 z8, all of it antialiasing on simplified edges.
+
+## 17. Dedicated common areas are parcels that never climb the ladder
+
+A subdivision plat sets aside tracts that are never meant to carry a house:
+dedicated open space, parks, drainage and detention lots, well sites, the
+condominium master lot. They are parcels, they sit at stage 0 for ever, and
+left in they inflate dormant inventory and depress every absorption curve.
+Asked about on 2026-10-30; measured the same day.
+
+The short legal description (`LegalDescr` / `LegalDescriptionShort` /
+`SHT_LEG_DS`, present in every vintage, populated on 99.6% of 2026 parcels and
+92.7% of 2006) had never been extracted. Read from the archives, it is only
+part of the answer, and three signals are combined (`timeseries/commonarea.py`):
+
+| signal, platted-only subdivision lots under 40 ac | 2026 (of 54,168) | 2006 (of 63,994) |
+|---|---|---|
+| DOR property type Non-Valued | 3,215 | 383 |
+| owners' association or condo master, or the owner field *is* the tract's name | 1,583 | 588 |
+| legal description names the tract, and no building is assessed | 2,214 | 1,191 |
+| **any signal** | **4,194 (7.7%)** | **1,642 (2.6%)** |
+
+In Flathead, Missoula and Gallatin counties a fifth to a quarter of
+platted-only lots are such tracts.
+
+Four traps, each found by sampling the hits:
+
+* **"PLUS OPEN SPACE" is a lot, not a park.** Gallatin appends it to ordinary
+  residential lots that own a share of a common area; Yellowstone writes
+  "2.5% COMMON AREA INTEREST" on condominium units. A phrase that follows an
+  appurtenance word is excluded.
+* **PARK and TRAIL are mostly names.** Roundup Park Addition, Clyde Park,
+  Trail Creek Addition, Parkland West. The description is matched with the
+  subdivision's own name removed, PARK counts only as a descriptor ("PARK D",
+  "PARK AREA", "PARK IN BLK") and TRAIL not at all.
+* **A built parcel with only a legal phrase is a house.** The legal signal
+  needs no assessed building; the owner and property-type signals stand at
+  any stage, since a clubhouse on an HOA tract is still a tract. With the
+  guards the rule touches 0.4% of built lots in 2026 and 0.2% in 2006;
+  without the building guard it flagged a residence for every two tracts.
+* **Non-Valued outside a subdivision is a substation or a railbed.** The
+  first cut took the property type at any location and flagged 1,642 parcels
+  with no subdivision name, 33,000 acres, 81% of them owned by NorthWestern
+  Energy, BNSF, Avista, the telephone cooperatives and the ditch companies:
+  centrally assessed property, which the county marks Non-Valued for a
+  different reason. The signal is confined to named subdivisions. For the
+  same reason a company whose name merely contains the words ("WIDE OPEN
+  SPACES LLC", "PARKLAND USA CORPORATION") is not a tract-named owner.
+
+Flagged parcels leave the ladder everywhere: the aggregate cubes count them
+in their own column (`n_dev4`, label `common_area`), the absorption cohorts
+and dormant inventory drop them, and the parcel tiles carry `dev = 4` so the
+Development view paints them in the public-land green and names them in its
+key. The per-parcel `common_area_src` bitmask (1 legal, 2 non-valued, 4
+association, 8 tract-named owner) travels in the extract for QA.
+
+What moved when they left (2026-09-04 vintage, before → after):
+
+| measure | before | after | change |
+|---|---|---|---|
+| platted-only parcels, statewide | 368,424 | 363,635 | −4,789 |
+| addressed, not built | 43,711 | 42,393 | −1,318 |
+| built | 474,989 | 473,494 | −1,495 |
+| common area (new column) | — | 7,602 (52,551 ac) | |
+| dormant inventory, all sizes | 70,984 | 67,790 | −4.5% |
+| dormant lots under 40 ac | 46,868 | 43,743 | −6.7% |
+| dormant lots under 40 ac, five years or older | 37,230 | 34,598 | −7.1% |
+| built share of cohorts ten snapshots old or more | 61.1% | 61.9% | +0.8 pt |
+
+The addressed and built parcels that left are association-owned and
+non-valued tracts that happen to carry a structure or a street number (a
+clubhouse, a pump house): 0.3% of built parcels, the rate the guard note
+above reports.
+
+One vintage is a known exception. 2009-07-05 ships its value block dead, so
+improvement status is unknown there and the legal signal runs unguarded: it
+flags 5,270 parcels against 3,802 and 4,299 in the vintages either side,
+roughly a thousand more legal hits than either neighbour. The Development
+view already masks that vintage as "no data", dormant inventory is measured
+on the latest vintage, and the absorption cohorts never read a stage from
+it, so nothing published rests on it; the share-of-platted-lots figure for
+that vintage is null in the QA rather than wrong.

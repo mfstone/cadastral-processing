@@ -107,7 +107,7 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
         f"{SNAP_DIR}/parcels_{date}.parquet",
         # situs_city is read for locality, not published: city_county_map and
         # classify both require it to tell a local owner from an absentee one.
-        columns=["parcel_id", "improved", "has_house_number", "acres",
+        columns=["parcel_id", "improved", "has_house_number", "acres", "is_common_area",
                  "owner_city", "situs_city", "owner_state", "county_n",
                  "owner_name_norm", "is_condo"])
     pres = pd.read_parquet(f"{EVENT_DIR}/presence.parquet",
@@ -135,6 +135,9 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
     dev = np.where(imp == 1, 2,
                    np.where(p["has_house_number"].fillna(False), 1, 0)).astype("int8")
     dev[imp == -1] = -1
+    # Dedicated common areas (timeseries.commonarea) are off the ladder; the
+    # tile carries 4 so the Development view can show them without counting them.
+    dev[p["is_common_area"].fillna(False).to_numpy(dtype=bool)] = 4
 
     # The owner's consolidated holding within the county (stage 10), so the
     # parcel layer can draw the paper's Figure 1: large private holdings and

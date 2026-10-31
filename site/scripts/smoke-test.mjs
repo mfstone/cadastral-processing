@@ -24,7 +24,7 @@ const DATA = [
   'county_stock.parquet', 'county_flow.parquet', 'county_owner_state.parquet',
   'absorption.parquet', 'size_histogram.parquet', 'dormant.parquet',
   'owner_state/CA.parquet', 'reservation_stock.parquet',
-  'reservations.geojson', 'publiclands.geojson',
+  'reservations.geojson', 'publiclands.geojson', 'cities.geojson',
   'holdings_county.parquet', 'holdings_top.parquet', 'holdings_review.parquet',
 ];
 
@@ -179,6 +179,29 @@ ok('clicking a parcel names its geocode', !!popup && /\d{17}/.test(popup),
   (popup || 'no popup').slice(0, 60));
 ok('parcel popup publishes no owner information',
   !!popup && /No owner information/.test(popup));
+
+// The info box names a geocode; the selection outline must draw that parcel
+// and only that parcel, and clear with the box.
+// A filter change shows up in queryRenderedFeatures only after the next frame.
+const selId = await page.evaluate(() => {
+  const f = window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] })[0];
+  if (!f) return null;
+  window.__map.selectParcel(f.properties.id);
+  return f.properties.id;
+});
+await new Promise((r) => setTimeout(r, 800));
+const selDrawn = await page.evaluate(() => {
+  const ids = window.__map.map.queryRenderedFeatures({ layers: ['parcel-sel'] }).map((x) => x.properties.id);
+  window.__map.selectParcel('');
+  return Array.from(new Set(ids));
+});
+await new Promise((r) => setTimeout(r, 800));
+const selCleared = await page.evaluate(() =>
+  window.__map.map.queryRenderedFeatures({ layers: ['parcel-sel'] }).length);
+const selCheck = selId ? { id: selId, drawn: selDrawn, cleared: selCleared } : null;
+ok('clicked parcel is outlined as selected',
+  !!selCheck && selCheck.drawn.length === 1 && selCheck.drawn[0] === selCheck.id && selCheck.cleared === 0,
+  JSON.stringify(selCheck));
 
 await page.evaluate(() => window.__map.map.jumpTo({ center: [-110.0, 46.9], zoom: 6.2 }));
 await new Promise((r) => setTimeout(r, 2500));

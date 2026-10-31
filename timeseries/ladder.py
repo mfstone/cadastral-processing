@@ -95,7 +95,10 @@ def absorption(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR) -> pd.DataF
     for j, date in enumerate(dates):
         df = pd.read_parquet(os.path.join(snap_dir, f"parcels_{date}.parquet"),
                              columns=["parcel_id", "improved", "has_house_number",
-                                      "county_n", "acres"])
+                                      "county_n", "acres", "is_common_area"])
+        # Dedicated common areas never absorb; they would read as lots that
+        # failed to (timeseries.commonarea).
+        df = df[~df["is_common_area"].to_numpy(dtype=bool)]
         df["dev_stage"] = _dev_stage(df)
         df["first_idx"] = df["parcel_id"].map(first).astype("int16")
         born = df[(df["first_idx"] > 0) & (df["first_idx"] <= j)]
@@ -178,10 +181,14 @@ def dormant(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR,
                            columns=["parcel_id", "first_idx"])
     first = pres.set_index("parcel_id")["first_idx"]
     df = pd.read_parquet(os.path.join(snap_dir, f"parcels_{latest}.parquet"),
-                         columns=["parcel_id", "dev_stage", "county_n", "acres",
-                                  "township_key"] if False else
-                                 ["parcel_id", "improved", "has_house_number",
-                                  "county_n", "acres", "county", "twp_code"])
+                         columns=["parcel_id", "improved", "has_house_number",
+                                  "county_n", "acres", "county", "twp_code",
+                                  "is_common_area"])
+    # A dedicated park or open-space tract is stage 0 by design, not dormant
+    # inventory; out before anything is counted (timeseries.commonarea).
+    common = df["is_common_area"].to_numpy(dtype=bool)
+    log.info("  dormant: %s common-area tracts left out of %s", f"{int(common.sum()):,}", latest)
+    df = df[~common]
     df["dev_stage"] = _dev_stage(df)
     df["tr_unit"] = df["county"].fillna("") + df["twp_code"].fillna("")
     df["first_idx"] = df["parcel_id"].map(first).astype("int16")
@@ -247,7 +254,9 @@ def main(argv: list[str] | None = None) -> int:
           "dormant_lt40ac_acres": float(dm["dormant_lt40ac_acres"].sum()),
           "dormant_note": ("stage 0 is the normal permanent state of a working "
                            "ranch tract; the under-40-acre figure is the "
-                           "residential-lot proxy"),
+                           "residential-lot proxy; dedicated common areas "
+                           "(open space, parks, HOA and condo tracts) are "
+                           "excluded from every cohort"),
           "thresholds": tqa}
     with open(os.path.join(args.out, "qa_ladder.json"), "w") as fh:
         json.dump(qa, fh, indent=2, default=str)

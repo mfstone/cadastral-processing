@@ -210,7 +210,10 @@ function parcelStyle() {
 
   switch (S.view) {
     case 'ladder':
-      return [['match', ['get', 'dev'], 0, ord3[0], 1, ord3[1], 2, ord3[2], masked], bornHere];
+      // 4 = dedicated common area (open space, park, HOA tract): on the map in
+      // the public-land green, off the ladder in every count.
+      return [['match', ['get', 'dev'], 0, ord3[0], 1, ord3[1], 2, ord3[2],
+        4, cssVar('--public-land'), masked], bornHere];
     case 'ownership': {
       const by = S.measure === 'acres' ? 'loc' : 'ten';
       if (by === 'ten') {
@@ -228,17 +231,25 @@ function parcelStyle() {
         0, masked, 1, masked, 2, ord3[1], masked], bornHere];
     case 'holdings':
       // The paper's Figure 1 at parcel scale: the four largest holdings in the
-      // county, other large holdings, small private, and public/tribal muted.
+      // county, other large holdings, small private; then the land outside
+      // the private universe, public in the forest-service green the overlay
+      // uses and tribal trust in its own colour. What is left (hs -1 with a
+      // private tenure code) has no owner of record or is public by area
+      // only, and stays muted rather than being passed off as either.
       return [['case',
         ['>', ['coalesce', ['get', 'hr'], 0], 0], cssVar('--statute'),
         ['>=', ['coalesce', ['get', 'hs'], -1], 1], ord5[3],
         ['==', ['coalesce', ['get', 'hs'], -1], 0], ord5[0],
+        ['==', ['coalesce', ['get', 'ten'], 2], 0], cssVar('--public-land'),
+        ['==', ['coalesce', ['get', 'ten'], 2], 1], cssVar('--cat-2'),
         masked], null];
     case 'review':
       return [['case',
         ['all', ['>=', ['coalesce', ['get', 'hs'], -1], 1], ['==', ['coalesce', ['get', 'hp'], 0], 1]], cssVar('--statute'),
         ['>=', ['coalesce', ['get', 'hs'], -1], 1], ord5[3],
         ['==', ['coalesce', ['get', 'hs'], -1], 0], ord5[0],
+        ['==', ['coalesce', ['get', 'ten'], 2], 0], cssVar('--public-land'),
+        ['==', ['coalesce', ['get', 'ten'], 2], 1], cssVar('--cat-2'),
         masked], null];
     case 'thresholds':
       // The 20-acre statutory line, drawn on the parcels themselves.
@@ -250,7 +261,8 @@ function parcelStyle() {
 }
 
 const PARCEL_LEGEND = {
-  ladder: [['platted only', 'ord3-1'], ['addressed', 'ord3-2'], ['built', 'ord3-3']],
+  ladder: [['platted only', 'ord3-1'], ['addressed', 'ord3-2'], ['built', 'ord3-3'],
+           ['common area / open space (off the ladder)', 'public-land']],
   ownership: [['public domain', 'cat-1'], ['tribal trust', 'cat-2'], ['private', 'cat-3']],
   fragmentation: [['<5 ac', 'ord5-1'], ['5-40', 'ord5-2'], ['40-160', 'ord5-3'],
                   ['160-640', 'ord5-4'], ['>640', 'ord5-5']],
@@ -258,9 +270,11 @@ const PARCEL_LEGEND = {
   thresholds: [['under 20 ac', 'ord5-1'], ['20-40 ac (above the DEQ line)', 'statute'],
                ['40-160', 'ord5-3'], ['over 160', 'ord5-5']],
   holdings: [['four largest holdings in the county', 'statute'], ['other 640+ ac holding', 'ord5-4'],
-             ['private, under 640 ac', 'ord5-1'], ['public or tribal', 'masked']],
+             ['private, under 640 ac', 'ord5-1'], ['public land', 'public-land'], ['tribal trust', 'cat-2'],
+             ['no owner of record, or public by area only', 'masked']],
   review: [['holding awaits a review decision', 'statute'], ['640+ ac holding, clean', 'ord5-4'],
-           ['private, under 640 ac', 'ord5-1'], ['public or tribal', 'masked']],
+           ['private, under 640 ac', 'ord5-1'], ['public land', 'public-land'], ['tribal trust', 'cat-2'],
+           ['no owner of record, or public by area only', 'masked']],
 };
 
 function applyParcelStyle() {
@@ -313,6 +327,9 @@ VIEWS.ladder = {
     // instead of as missing data.
     const unknown = seriesOf(c, 'n_dev3', units);
     const hasUnknown = Array.from(unknown).some((v) => v > 0);
+    // Dedicated common areas are counted apart (n_dev4) and never enter the
+    // ladder's shares; the tile below says how many were set aside.
+    const common = seriesOf(c, 'n_dev4', units);
     const use = (S.measure === 'acres' ? acr : ser).slice();
     const stackLabels = ['platted only', 'addressed', 'built'];
     const stackColors = C.ramp('ord3', 3);
@@ -331,10 +348,12 @@ VIEWS.ladder = {
         detail: tot ? `${((100 * ser[1][S.snap]) / (ser[0][S.snap] + ser[1][S.snap] + ser[2][S.snap])).toFixed(1)}% of parcels` : '' },
       { value: C.fmtInt(ser[0][S.snap]), label: 'platted only' },
       { value: C.fmtInt(ser[2][S.snap]), label: 'built' },
+      { value: C.fmtInt(common[S.snap]), label: 'common area, off the ladder',
+        detail: 'dedicated open space, parks, HOA and condo tracts' },
     ]);
 
     const k1 = C.card(panel, 'The ladder over time',
-      'Platted only → address assigned → assessed building value. A parcel with a house number carries a building 89–91% of the time.');
+      'Platted only → address assigned → assessed building value. A parcel with a house number carries a building 89–91% of the time. Dedicated common areas are not on the ladder.');
     C.stackedArea(k1, {
       series: use, labels: stackLabels, colors: stackColors,
       xLabels: snapLabels(), share: true,
@@ -1150,6 +1169,7 @@ function buildControls() {
   for (const [kind, file, label] of [
     ['reservations', 'reservations.geojson', 'reservations'],
     ['publiclands', 'publiclands.geojson', 'public lands'],
+    ['cities', 'cities.geojson', 'city limits'],
   ]) {
     $(`lyr-${kind}`).addEventListener('change', async (e) => {
       if (!e.target.checked) { S.map.setOverlay(kind, false); return; }
@@ -1225,7 +1245,7 @@ export async function boot() {
         + `<div class="hint" style="margin-top:5px;color:var(--ink-muted)">`
         + `Geocode is the DOR parcel identifier. No owner information is published.</div>`;
       box.hidden = false;
-      $('pi-x').addEventListener('click', () => { box.hidden = true; });
+      $('pi-x').addEventListener('click', () => { box.hidden = true; S.map.selectParcel(''); });
     },
     onSelect: (level, id, props, additive) => {
       const u = level === 'county' ? Number(id) : (S.twpByKey.get(id)?.id ?? null);

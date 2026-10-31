@@ -41,6 +41,9 @@
   --statute: #af3c3a;
   --ui: #04665e; --ui-ink: #ffffff;
   --masked: #ddd6c4;
+  --public-land: #2b7a4b;
+  --county-line: #000000;
+  --city-limit: #ffe100;
   --map-ground: #ece5d5;
   --map-line: #a0967f;
 }
@@ -68,6 +71,9 @@
     --statute: #e66e68;
     --ui: #45c1b4; --ui-ink: #11100d;
     --masked: #3a3529;
+    --public-land: #4fae76;
+    --county-line: #f7f4ec;
+    --city-limit: #ffe100;
     --map-ground: #16140f;
     --map-line: #514938;
   }
@@ -95,6 +101,9 @@
   --statute: #e66e68;
   --ui: #45c1b4; --ui-ink: #11100d;
   --masked: #3a3529;
+    --public-land: #4fae76;
+    --county-line: #f7f4ec;
+    --city-limit: #ffe100;
   --map-ground: #16140f;
   --map-line: #514938;
 }

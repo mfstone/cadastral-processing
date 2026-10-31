@@ -54,7 +54,7 @@ PARQUET_KW = dict(compression="gzip", index=False)
 TOPICS = {
     "core": ["parcels", "acres", "quarters", "n_condo", "n_named_subdiv",
              "coverage_ok"],
-    "dev": [f"n_dev{i}" for i in range(4)] + [f"ac_dev{i}" for i in range(4)],
+    "dev": [f"n_dev{i}" for i in range(5)] + [f"ac_dev{i}" for i in range(5)],
     "tenure": [f"n_ten{i}" for i in range(oc.N_TENURE)]
               + [f"ac_ten{i}" for i in range(oc.N_TENURE)] + ["n_on_public_land"],
     "locality": [f"n_loc{i}" for i in range(locality.N_LEVELS)]
@@ -289,7 +289,7 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
 
     # ---- geometry
     for g in ("townships.geojson", "counties.geojson",
-              "reservations.geojson", "publiclands.geojson"):
+              "reservations.geojson", "publiclands.geojson", "cities.geojson"):
         src = os.path.join(LOC_DIR, g)
         if os.path.exists(src):
             shutil.copy(src, os.path.join(out_dir, g))
@@ -327,7 +327,8 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
             "locality_robust": locality.ROBUST_LEVELS,
             "tenure": oc.TENURE,
             "owner_class": oc.CLASSES,
-            "dev_stage": ["platted_only", "addressed_not_built", "built", "unknown"],
+            "dev_stage": ["platted_only", "addressed_not_built", "built", "unknown",
+                          "common_area"],
             "owner_origin": STATE_BUCKETS,
             "holding_size": ["<640", "640-2,560", "2,560-10,000", "10,000-50,000", ">50,000"],
             "review_status": ["clean", "merged by entity name", "name-token check",

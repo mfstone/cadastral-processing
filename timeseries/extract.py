@@ -49,6 +49,7 @@ import pandas as pd
 
 from cadastral.schema import SQM_TO_ACRES, resolve_columns
 
+from . import commonarea
 from . import geocode as gc
 from . import owners as ow
 from . import sources
@@ -66,7 +67,7 @@ EXTRACT_FIELDS = [
     "owner_address_1", "owner_address_2", "owner_address_3",
     "gis_acres", "area_sqm",
     "subdivision", "cert_survey", "property_type", "build_value", "land_value",
-    "owner_class", "owner_gen_descrip", "res_prop_ind",
+    "owner_class", "owner_gen_descrip", "res_prop_ind", "legal_desc",
     "owner_zip", "mail_zip",
     "situs_number", "situs_street", "situs_addr_1",
     "ag_continuous_crop", "ag_fallow", "ag_farmsite", "ag_forest",
@@ -219,7 +220,8 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
     for logical, name in (("subdivision", "subdivision"), ("cert_survey", "cert_survey"),
                           ("property_type", "property_type"), ("situs_city", "situs_city"),
                           ("owner_class", "owner_class"), ("res_prop_ind", "res_prop_ind"),
-                          ("owner_gen_descrip", "owner_gen_descrip")):
+                          ("owner_gen_descrip", "owner_gen_descrip"),
+                          ("legal_desc", "legal_desc")):
         col = res.get(logical)
         v[name] = (_first_str(df.loc[valid, col].astype("string").str.strip())
                    if col and col in df.columns else "")
@@ -318,7 +320,8 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
                   "owner_state_valid", "owner_in_state", "subdivision", "cert_survey",
                   "property_type", "situs_city", "owner_class", "owner_gen_descrip",
                   "res_prop_ind", "owner_city", "owner_zip5",
-                  "owner_addr_norm", "owner_addr_generic", "owner_addr_careof"]
+                  "owner_addr_norm", "owner_addr_generic", "owner_addr_careof",
+                  "legal_desc"]
     for c in first_cols:
         agg[c] = (c, "first")
     parcels = grouped.agg(**agg)
@@ -359,6 +362,15 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
     stage[parcels["improved"].to_numpy() == -1] = -1
     parcels["dev_stage"] = stage
     parcels["is_ag"] = (parcels["ag_acres"].fillna(0) > 0).to_numpy(dtype=bool)
+    # Dedicated common areas (open space, parks, HOA and condo tracts) are
+    # parcels that will never climb the ladder; flagged here, from the legal
+    # description, the DOR property type and the owner, so every later stage
+    # can leave them out. See timeseries.commonarea.
+    parcels["is_common_area"], parcels["common_area_src"] = commonarea.classify(
+        parcels["legal_desc"], parcels["subdivision"], parcels["property_type"],
+        parcels["owner_name_norm"], parcels["improved"])
+    qa["legal_desc_column"] = res.get("legal_desc")
+    qa["pct_with_legal_desc"] = round(100.0 * float((parcels["legal_desc"].fillna("") != "").mean()), 3)
     parcels["land_value"] = parcels["land_value"].fillna(-1.0).astype("float64")
     parcels["ag_acres"] = parcels["ag_acres"].fillna(0.0).astype("float32")
 
@@ -370,6 +382,7 @@ def _extract_open(snap: sources.Snapshot, orig: sources.Snapshot, out_dir: str) 
     parcels["build_value"] = parcels["build_value"].fillna(-1.0).astype("float64")
     parcels["n_parts"] = parcels["n_parts"].astype("int16")
     parcels["owner_variants"] = parcels["owner_variants"].astype("int16")
+    qa["common_area"] = commonarea.summarize(parcels)
 
     os.makedirs(out_dir, exist_ok=True)
     ppath = os.path.join(out_dir, f"parcels_{snap.date}.parquet")

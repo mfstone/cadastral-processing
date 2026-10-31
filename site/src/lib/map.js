@@ -112,9 +112,13 @@ export class UnitMap {
       m.addLayer({
         id: `${id}-line`, type: 'line', source: src,
         paint: {
-          'line-color': mapLine(),
-          'line-width': id === 'county' ? 0.9 : 0.35,
-          'line-opacity': id === 'county' ? 0.85 : 0.5,
+          // County lines are the reference a reader orients by at lot scale,
+          // so they are black (white in the dark theme) and thicken with zoom
+          // instead of thinning into the parcel grid.
+          'line-color': id === 'county' ? cssv('--county-line') : mapLine(),
+          'line-width': id === 'county'
+            ? ['interpolate', ['linear'], ['zoom'], 6, 0.9, 10, 1.5, 13, 2.6] : 0.35,
+          'line-opacity': id === 'county' ? 0.9 : 0.5,
         },
       });
       // Selection is driven through a PAINT expression, not a filter:
@@ -164,14 +168,45 @@ export class UnitMap {
       filter: ['==', ['get', 'born'], -999],
       paint: { 'line-color': cssv('--cat-2'), 'line-width': 1.6 },
     });
+    // The parcel fill is 85% opaque from z11 and had been hiding the county
+    // line and the unit selection outlines beneath it; they ride on top.
+    for (const id of ['county-line', 'township-sel', 'county-sel']) {
+      if (m.getLayer(id)) m.moveLayer(id);
+    }
+    // The clicked parcel, so the reader knows which one the info box
+    // describes: a cased outline that reads on any fill, selected by geocode
+    // through a filter (the tiles carry no feature ids for feature-state).
+    // Topmost, above the county line and the unit selection.
+    m.addLayer({
+      id: 'parcel-sel-case', type: 'line', source: 'parcels', 'source-layer': 'parcels',
+      minzoom: 10, filter: ['==', ['get', 'id'], ''],
+      layout: { 'line-join': 'round' },
+      paint: { 'line-color': cssv('--page') || '#ffffff', 'line-width': 5.5, 'line-opacity': 0.95 },
+    });
+    m.addLayer({
+      id: 'parcel-sel', type: 'line', source: 'parcels', 'source-layer': 'parcels',
+      minzoom: 10, filter: ['==', ['get', 'id'], ''],
+      layout: { 'line-join': 'round' },
+      paint: { 'line-color': cssv('--ui') || '#04665e', 'line-width': 2.6 },
+    });
     m.on('click', 'parcel-fill', (e) => {
       const f = e.features && e.features[0];
-      if (f && this.onParcel) this.onParcel(f.properties, e.lngLat);
+      if (!f) return;
+      this.selectParcel(f.properties.id);
+      if (this.onParcel) this.onParcel(f.properties, e.lngLat);
     });
     m.on('mouseenter', 'parcel-fill', () => { m.getCanvas().style.cursor = 'pointer'; });
     m.on('mouseleave', 'parcel-fill', () => { m.getCanvas().style.cursor = ''; });
 
     this.setLevel('township');
+  }
+
+  /** Outline one parcel by geocode; an empty id clears the outline. */
+  selectParcel(id) {
+    this.selectedParcel = id || '';
+    for (const l of ['parcel-sel-case', 'parcel-sel']) {
+      if (this.map.getLayer(l)) this.map.setFilter(l, ['==', ['get', 'id'], this.selectedParcel]);
+    }
   }
 
   /** Reference overlays, fetched only when first switched on. */
@@ -181,22 +216,37 @@ export class UnitMap {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${kind}: HTTP ${res.status}`);
     m.addSource(`ov-${kind}`, { type: 'geojson', data: await res.json() });
-    // Reference geography must RECEDE. Public land covers 35M acres, a third of
-    // the state, so a saturated fill drowns the analytical surface it is meant
-    // to contextualise; it gets a desaturated wash and no outline, because 31k
-    // polygons dissolved into four still produce an extremely busy edge. The
-    // seven reservations are few and large, so they read best as an annotation:
-    // an outline, no fill.
+    // Public land is the edge of the private universe the holdings views
+    // measure, so it is drawn as land: the conventional forest-service green,
+    // translucent enough for the parcel surface and basemap to read through.
+    // It sits ABOVE the parcel fill -- that fill is 85% opaque at parcel zoom
+    // and used to hide the overlay entirely -- and below the highlight and
+    // selection outlines. (A 16% grey wash beneath the parcels was tried
+    // first and was invisible wherever it mattered.) The seven reservations
+    // are few and large, so they read best as an annotation: an outline, no
+    // fill.
     if (kind === 'publiclands') {
+      const above = m.getLayer('parcel-hl') ? 'parcel-hl' : 'township-line';
       m.addLayer({
         id: 'ov-publiclands-fill', type: 'fill', source: 'ov-publiclands',
-        paint: { 'fill-color': cssv('--ink-muted'), 'fill-opacity': 0.16 },
-      }, 'township-line');
+        paint: { 'fill-color': cssv('--public-land'), 'fill-opacity': 0.38 },
+      }, above);
       m.addLayer({
         id: 'ov-publiclands-line', type: 'line', source: 'ov-publiclands',
-        paint: { 'line-color': cssv('--ink-muted'), 'line-width': 0.5,
-                 'line-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 11, 0.55] },
-      });
+        paint: { 'line-color': cssv('--public-land'), 'line-width': 0.6,
+                 'line-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.3, 11, 0.75] },
+      }, above);
+    } else if (kind === 'cities') {
+      // City limits are annotation too: a dashed outline in a colour nothing
+      // else on the map uses, no fill, above the parcels so the limit stays
+      // legible at lot scale, where it is the question most often asked.
+      const above = m.getLayer('parcel-hl') ? 'parcel-hl' : 'township-line';
+      m.addLayer({
+        id: 'ov-cities-line', type: 'line', source: 'ov-cities',
+        paint: { 'line-color': cssv('--city-limit'), 'line-dasharray': [3, 1.5],
+                 'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.0, 10, 2.0, 13, 3.2],
+                 'line-opacity': 1 },
+      }, above);
     } else {
       m.addLayer({
         id: 'ov-reservations-fill', type: 'fill', source: 'ov-reservations',
@@ -219,7 +269,7 @@ export class UnitMap {
   }
 
   setParcelsVisible(on) {
-    for (const id of ['parcel-fill', 'parcel-line', 'parcel-hl']) {
+    for (const id of ['parcel-fill', 'parcel-line', 'parcel-hl', 'parcel-sel-case', 'parcel-sel']) {
       if (this.map.getLayer(id)) {
         this.map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
       }
@@ -373,13 +423,21 @@ export class UnitMap {
     }
     const line = getComputedStyle(document.documentElement)
       .getPropertyValue('--map-line').trim() || '#a0967f';
-    for (const id of ['township-line', 'county-line']) {
-      if (this.map.getLayer(id)) this.map.setPaintProperty(id, 'line-color', line);
-    }
+    if (this.map.getLayer('township-line')) this.map.setPaintProperty('township-line', 'line-color', line);
+    if (this.map.getLayer('county-line')) this.map.setPaintProperty('county-line', 'line-color', cssv('--county-line'));
+    if (this.map.getLayer('parcel-sel-case')) this.map.setPaintProperty('parcel-sel-case', 'line-color', cssv('--page') || '#ffffff');
+    if (this.map.getLayer('parcel-sel')) this.map.setPaintProperty('parcel-sel', 'line-color', cssv('--ui') || '#04665e');
     const sel = getComputedStyle(document.documentElement)
       .getPropertyValue('--ink-1').trim() || '#1a1712';
     for (const id of ['township-sel', 'county-sel']) {
       if (this.map.getLayer(id)) this.map.setPaintProperty(id, 'line-color', sel);
+    }
+    // Overlays were coloured when loaded; re-read their tokens too.
+    for (const [id, tok] of [['ov-publiclands-fill', '--public-land'], ['ov-publiclands-line', '--public-land'],
+                             ['ov-reservations-fill', '--cat-2'], ['ov-reservations-line', '--cat-2'],
+                             ['ov-cities-line', '--city-limit']]) {
+      if (!this.map.getLayer(id)) continue;
+      this.map.setPaintProperty(id, id.endsWith('-fill') ? 'fill-color' : 'line-color', cssv(tok));
     }
   }
 }

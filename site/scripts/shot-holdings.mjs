@@ -16,6 +16,11 @@ await p.waitForSelector('#panel .card svg', { timeout: 90000 });
 // switch to Holdings
 await p.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Holdings') b.click(); });
 await new Promise((r) => setTimeout(r, 6000));
+// SHOT_PL=1 also turns on the public-lands overlay, which the view must not hide.
+if (process.env.SHOT_PL) {
+  await p.evaluate(() => { for (const id of ['lyr-publiclands', 'lyr-cities']) { const c = document.getElementById(id); if (c && !c.checked) c.click(); } });
+  await new Promise((r) => setTimeout(r, 5000));
+}
 await p.screenshot({ path: `${OUT}/holdings-state.png` });
 // Meagher County (71 Ranch) at parcel scale
 await p.evaluate(() => window.__map.map.jumpTo({ center: [-110.95, 46.45], zoom: 11.3 }));
@@ -30,6 +35,16 @@ const info = await p.evaluate(() => {
   return { zoom: +mp.getZoom().toFixed(1), parcels: f.length, hs, top4, flagged, legend: document.getElementById('legend').innerText.slice(0, 160) };
 });
 console.log(JSON.stringify(info));
+if (process.env.SHOT_PL) {
+  await p.evaluate(() => window.__map.map.jumpTo({ center: [-110.95, 46.45], zoom: 12.6 }));
+  await new Promise((r) => setTimeout(r, 8000));
+  await m.screenshot({ path: `${OUT}/holdings-meagher-z12.png` });
+  await p.evaluate(() => document.getElementById('theme').click());
+  await new Promise((r) => setTimeout(r, 5000));
+  await m.screenshot({ path: `${OUT}/holdings-meagher-z12-dark.png` });
+  await p.evaluate(() => document.getElementById('theme').click());
+  await new Promise((r) => setTimeout(r, 3000));
+}
 // Review view panel
 await p.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Review') b.click(); });
 await new Promise((r) => setTimeout(r, 5000));

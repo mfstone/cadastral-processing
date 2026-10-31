@@ -104,7 +104,7 @@ choices and the Table 1 regression baseline are in `docs/holdings_definitions.md
 | -- | `timeseries/regress.py` | `data/facts/regression_table1.csv`: residuals against the paper's Table 1 |
 
 ```bash
-.venv/bin/python -m timeseries.extract          # now carries owner_addr_norm (+ generic / care-of flags)
+.venv/bin/python -m timeseries.extract          # now carries owner_addr_norm (+ generic / care-of flags), legal_desc, is_common_area
 .venv/bin/python -m timeseries.identity         # --overrides owner_overrides.csv to apply reviews
 .venv/bin/python -m timeseries.tenure_area      # ~5 min per snapshot; holdings falls back to the point method without it
 .venv/bin/python -m timeseries.holdings
@@ -131,6 +131,7 @@ view as a range between the document tier and the maximal tier.
 | `cadastral/dissolve.py` | geometry repair, dissolve, area recompute |
 | `cadastral/orion.py` | ORION cache reader, party profiles, resolver, deeds |
 | `orion_etl.py` | one-time ORION SQL Server -> Parquet ETL + profiler |
+| `timeseries/commonarea.py` | dedicated common-area flag (open space, parks, HOA tracts) that leaves the development ladder |
 | `timeseries/identity.py` | owner identity tiers + review flags per snapshot |
 | `timeseries/tenure_area.py` | public-land area overlap per parcel |
 | `timeseries/holdings.py` | large-holding and concentration metrics |

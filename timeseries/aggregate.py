@@ -156,7 +156,7 @@ def stock_tables(snap_dir: str, units: pd.DataFrame, city_county: pd.Series):
             "parcel_id", "county", "twp_code", "section", "quarter", "county_n", "acres",
             "owner_state", "improved", "is_condo", "owner_is_entity", "subdivision",
             "owner_city", "situs_city", "owner_name_norm", "dev_stage", "is_ag",
-            "ag_acres", "has_situs_addr", "has_house_number"])
+            "ag_acres", "has_situs_addr", "has_house_number", "is_common_area"])
         ag_clamped, ag_ok = _ag_acres(df)
         if not ag_ok:
             log.warning("  %s: agricultural block is dead (%.2f%% populated); "
@@ -228,6 +228,11 @@ def stock_tables(snap_dir: str, units: pd.DataFrame, city_county: pd.Series):
         f["_one"] = 1
         # dev_stage uses -1 for "unknown", which cannot index a pivot column.
         f["dev_idx"] = f["dev"].replace({-1: 3}).astype("int8")
+        # Dedicated common areas (timeseries.commonarea) leave the ladder at
+        # every stage: a park is not a lot waiting for a house, and a clubhouse
+        # is not a house. They are counted in their own column, n_dev4.
+        f["dev_idx"] = np.where(df["is_common_area"].to_numpy(dtype=bool), 4,
+                                f["dev_idx"].to_numpy()).astype("int8")
 
         # Unmappable units are bucketed, never dropped, so the two grains agree.
         f["tr_key"] = f["tr_key"].fillna(UNASSIGNED)
@@ -273,11 +278,11 @@ def stock_tables(snap_dir: str, units: pd.DataFrame, city_county: pd.Series):
                                   aggfunc="sum", fill_value=0.0)
             tena = tena.reindex(columns=range(oc.N_TENURE), fill_value=0.0)
             tena.columns = [f"ac_ten{i}" for i in range(oc.N_TENURE)]
-            devc = _counts(sub, key, "dev_idx", 4, "n_dev")
+            devc = _counts(sub, key, "dev_idx", 5, "n_dev")
             deva = sub.pivot_table(index=key, columns="dev_idx", values="acres",
                                   aggfunc="sum", fill_value=0.0)
-            deva = deva.reindex(columns=range(4), fill_value=0.0)
-            deva.columns = [f"ac_dev{i}" for i in range(4)]
+            deva = deva.reindex(columns=range(5), fill_value=0.0)
+            deva.columns = [f"ac_dev{i}" for i in range(5)]
             out = (base.join(szc).join(sza.astype("float32")).join(sbc)
                    .join(locc).join(loca.astype("float32")).join(occ)
                    .join(tenc).join(tena.astype("float32"))
@@ -443,7 +448,8 @@ def build(out_dir: str = OUT_DIR) -> dict:
                           "name-based fallback; tribal_trust from owner name only, "
                           "since trust land is absent from the public-lands layer; "
                           "the layer is a single 2026 vintage applied to all years"),
-          "dev_stages": ["platted_only", "addressed_not_built", "built", "unknown"],
+          "dev_stages": ["platted_only", "addressed_not_built", "built", "unknown",
+                         "common_area"],
           "owner_class_calibration": oc.calibrate(
               pd.read_parquet(os.path.join(SNAP_DIR, "parcels_2006-07-14.parquet"),
                               columns=["owner_name_norm", "owner_class", "acres"])),
