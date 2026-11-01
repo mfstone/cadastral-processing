@@ -46,6 +46,14 @@ function mapLine() {
 }
 
 /** The map's own ground, read from the theme so it does not stay light in dark mode. */
+function siteBase() {
+  return `${location.origin}${location.pathname.replace(/\/$/, '')}`;
+}
+// Labels are drawn from first-party glyphs (Noto Sans, vendored under
+// /fonts), so the page fetches nothing from a third party by default.
+function firstPartyGlyphs() {
+  return `${siteBase()}/fonts/{fontstack}/{range}.pbf`;
+}
 function mapGround() {
   const v = getComputedStyle(document.documentElement)
     .getPropertyValue('--map-ground').trim();
@@ -58,6 +66,48 @@ const BASEMAP_STYLES = {
   dark: 'https://tiles.openfreemap.org/styles/dark',
 };
 
+// Road widths by draw class (1 primary .. 5 track) and zoom; k scales the
+// casing. Private roads and tracks have no casing, and draw in the casing
+// grey rather than the road white so they stay quiet.
+function roadWidth(k) {
+  const w = (a, b, c, d) => ['match', ['get', 'cls'], 1, a * k, 2, b * k, 3, c * k, d * k];
+  return ['interpolate', ['linear'], ['zoom'],
+    10, w(1.6, 1.1, 0.5, 0.3), 13, w(4.5, 3.2, 1.8, 1.0), 15, w(9, 6.5, 4, 2.2)];
+}
+function roadColor() {
+  return ['case', ['>=', ['get', 'cls'], 4], cssv('--road-case'), cssv('--road-fill')];
+}
+/** City polygons to one label point each (largest part's bbox centre, acres summed). */
+function cityLabelPoints(fc) {
+  const byName = new Map();
+  for (const f of fc.features || []) {
+    const name = f.properties?.name;
+    if (!name) continue;
+    const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates]
+      : f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [];
+    let best = null;
+    for (const poly of polys) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const [x, y] of poly[0]) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+      const area = (x1 - x0) * (y1 - y0);
+      if (!best || area > best.area) best = { area, c: [(x0 + x1) / 2, (y0 + y1) / 2] };
+    }
+    if (!best) continue;
+    const acres = Number(f.properties.acres) || 0;
+    const cur = byName.get(name);
+    if (!cur) byName.set(name, { ...best, acres, props: f.properties });
+    else { cur.acres += acres; if (best.area > cur.area) { cur.area = best.area; cur.c = best.c; } }
+  }
+  return { type: 'FeatureCollection', features: Array.from(byName, ([name, v]) => ({
+    type: 'Feature', geometry: { type: 'Point', coordinates: v.c },
+    properties: { ...v.props, name, acres: v.acres } })) };
+}
+
+function labelPaint() {
+  return { 'text-color': cssv('--ink-1') || '#1a1712',
+           'text-halo-color': cssv('--page') || '#ffffff', 'text-halo-width': 1.3 };
+}
+
 export class UnitMap {
   constructor(container, { onSelect, onParcel } = {}) {
     this.onSelect = onSelect || (() => {});
@@ -68,18 +118,16 @@ export class UnitMap {
 
     this.map = new maplibregl.Map({
       container,
-      // No `glyphs` key at all. MapLibre validates the style and rejects
-      // `glyphs: undefined` outright ("string expected, undefined found"),
-      // which throws during construction and takes the whole page with it.
-      // There are no symbol layers here -- unit labels are drawn in the panel,
-      // not on the map -- so no glyph server is needed.
+      // `glyphs` must be a string or absent: MapLibre rejects `glyphs:
+      // undefined` outright and the whole page dies. The glyph server is
+      // first-party (see firstPartyGlyphs); unit labels stay in the panel.
       style: {
-        version: 8, sources: {}, layers: [
+        version: 8, sources: {}, glyphs: firstPartyGlyphs(), layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': mapGround() } },
         ],
       },
       bounds: MT_BOUNDS, fitBoundsOptions: { padding: 18 },
-      attributionControl: false, maxZoom: 13, minZoom: 4,
+      attributionControl: false, maxZoom: 15, minZoom: 4,
       dragRotate: false, pitchWithRotate: false,
     });
     this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
@@ -144,16 +192,22 @@ export class UnitMap {
     // --- actual parcels, above z10 -------------------------------------
     m.addSource('parcels', {
       type: 'vector',
-      tiles: [`${location.origin}${location.pathname.replace(/\/$/, '')}/data/parcels/{z}/{x}/{y}.pbf`],
+      tiles: [`${siteBase()}/data/parcels/{z}/{x}/{y}.pbf`],
       minzoom: 10, maxzoom: 12,
-      promoteId: 'id',
+      // The same tiles carry the roads and buildings layers; only parcels
+      // have a geocode to promote.
+      promoteId: { parcels: 'id' },
     });
+    // Parcel fills. (An outline-with-inward-band treatment was tried on
+    // 2026-10-31 so a street basemap could read between parcels; at town
+    // scale the bands outgrew the lots and the map lost legibility, so the
+    // fill came back.) Roads and buildings are drawn above the fill as
+    // first-party reference layers instead.
     m.addLayer({
       id: 'parcel-fill', type: 'fill', source: 'parcels', 'source-layer': 'parcels',
       minzoom: 10,
       paint: {
-        'fill-color': getComputedStyle(document.documentElement)
-          .getPropertyValue('--ord5-2').trim() || '#b3774d',
+        'fill-color': cssv('--ord5-2') || '#b3774d',
         'fill-opacity': ['interpolate', ['linear'], ['zoom'], 10, 0.35, 11, 0.85],
       },
     });
@@ -162,11 +216,39 @@ export class UnitMap {
       minzoom: 12.5,
       paint: { 'line-color': mapLine(), 'line-width': 0.4, 'line-opacity': 0.55 },
     });
+    // --- reference layers from the same tiles: buildings, then roads -------
+    // Building footprints exist only where lidar has flown (37 project areas,
+    // an eighth of the state); drawn in a neutral that reads on any parcel
+    // colour. Roads are cased from z10 so they read on the ground as well as
+    // on a fill; private roads and tracks are a faint uncased line from z12.
+    m.addLayer({
+      id: 'bld-fill', type: 'fill', source: 'parcels', 'source-layer': 'buildings',
+      minzoom: 12.5,
+      paint: { 'fill-color': cssv('--building'),
+               'fill-opacity': ['interpolate', ['linear'], ['zoom'], 12.5, 0.35, 14, 0.6] },
+    });
+    m.addLayer({
+      id: 'road-case', type: 'line', source: 'parcels', 'source-layer': 'roads',
+      minzoom: 10, layout: { 'line-cap': 'round', 'line-join': 'round' },
+      filter: ['<=', ['get', 'cls'], 3],
+      paint: { 'line-color': cssv('--road-case'), 'line-width': roadWidth(1.5), 'line-opacity': 0.9 },
+    });
+    m.addLayer({
+      id: 'road-line', type: 'line', source: 'parcels', 'source-layer': 'roads',
+      minzoom: 10, layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': roadColor(), 'line-width': roadWidth(1),
+               'line-opacity': ['interpolate', ['linear'], ['zoom'],
+                 11, ['case', ['>=', ['get', 'cls'], 4], 0, 1],
+                 12.5, ['case', ['>=', ['get', 'cls'], 4], 0.6, 1]] },
+    });
+    // Parcels first seen in the selected interval: magenta, a colour nothing
+    // else on the map uses.
     m.addLayer({
       id: 'parcel-hl', type: 'line', source: 'parcels', 'source-layer': 'parcels',
-      minzoom: 10,
+      minzoom: 10, layout: { 'line-join': 'round' },
       filter: ['==', ['get', 'born'], -999],
-      paint: { 'line-color': cssv('--cat-2'), 'line-width': 1.6 },
+      paint: { 'line-color': cssv('--created') || '#c4188f',
+               'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.2, 13, 2.2, 15, 3] },
     });
     // The parcel fill is 85% opaque from z11 and had been hiding the county
     // line and the unit selection outlines beneath it; they ride on top.
@@ -189,6 +271,27 @@ export class UnitMap {
       layout: { 'line-join': 'round' },
       paint: { 'line-color': cssv('--ui') || '#04665e', 'line-width': 2.6 },
     });
+    // Road names from the tiles, above everything but the selection.
+    m.addLayer({
+      id: 'road-label-major', type: 'symbol', source: 'parcels', 'source-layer': 'roads',
+      minzoom: 10, filter: ['all', ['<=', ['get', 'cls'], 2], ['!=', ['get', 'name'], '']],
+      layout: { 'symbol-placement': 'line', 'text-field': ['get', 'name'],
+                'text-font': ['Noto Sans Bold'], 'text-max-angle': 30, 'text-padding': 4,
+                'symbol-spacing': 420,
+                'text-size': ['interpolate', ['linear'], ['zoom'], 10, 10, 14, 13] },
+      paint: labelPaint(),
+    }, 'parcel-sel-case');
+    m.addLayer({
+      id: 'road-label', type: 'symbol', source: 'parcels', 'source-layer': 'roads',
+      minzoom: 12.5, filter: ['all', ['>=', ['get', 'cls'], 3], ['!=', ['get', 'name'], '']],
+      layout: { 'symbol-placement': 'line', 'text-field': ['get', 'name'],
+                'text-font': ['Noto Sans Regular'], 'text-max-angle': 30, 'text-padding': 3,
+                'symbol-spacing': 320,
+                'text-size': ['interpolate', ['linear'], ['zoom'], 12.5, 9.5, 15, 12] },
+      paint: labelPaint(),
+    }, 'parcel-sel-case');
+    await this._loadReference();
+    this.enforceOrder();
     m.on('click', 'parcel-fill', (e) => {
       const f = e.features && e.features[0];
       if (!f) return;
@@ -199,6 +302,99 @@ export class UnitMap {
     m.on('mouseleave', 'parcel-fill', () => { m.getCanvas().style.cursor = ''; });
 
     this.setLevel('township');
+  }
+
+  /** One canonical stacking order, re-imposed after anything is added.
+   *
+   * Bottom to top: the ground, the external basemap if one is on, the unit
+   * choropleth, parcels, the public-land wash, buildings and roads, the
+   * boundary annotations (public-land edge, reservations, city limits), the
+   * new-parcel outline, the county line, the unit selection, labels, and the
+   * clicked parcel above everything. Layers are added in many places and at
+   * many times, so the order is stated once here rather than at each add.
+   */
+  enforceOrder() {
+    const m = this.map;
+    const layers = m.getStyle().layers;
+    const ids = new Set(layers.map((l) => l.id));
+    const base = layers.filter((l) => l.id.startsWith('base-'));
+    const order = [
+      ...base.filter((l) => l.type !== 'symbol').map((l) => l.id),
+      'township-fill', 'township-line', 'county-fill',
+      'parcel-fill', 'parcel-line',
+      'ov-publiclands-fill',
+      'bld-fill', 'road-case', 'road-line', 'hwy-case', 'hwy-line',
+      'ov-publiclands-line', 'ov-reservations-fill', 'ov-reservations-line', 'ov-cities-line',
+      'parcel-hl',
+      'county-line', 'township-sel', 'county-sel',
+      'road-label-major', 'road-label', 'city-label-big', 'city-label-mid', 'city-label-small',
+      ...base.filter((l) => l.type === 'symbol').map((l) => l.id),
+      'parcel-sel-case', 'parcel-sel',
+    ];
+    for (const id of order) if (ids.has(id)) m.moveLayer(id);
+  }
+
+  /** Statewide highways for the zooms below the tiles, and city names. */
+  async _loadReference() {
+    const m = this.map;
+    const base = siteBase();
+    try {
+      const r = await fetch(`${base}/data/highways.geojson`);
+      if (r.ok && !m.getSource('hwy')) {
+        m.addSource('hwy', { type: 'geojson', data: await r.json() });
+        // Cased like the roads in the tiles, so they read as roads on the
+        // choropleth rather than as another grid line.
+        const hw = (k) => ['interpolate', ['linear'], ['zoom'],
+          5, ['match', ['get', 'cls'], 1, 1.6 * k, 0.8 * k], 10, ['match', ['get', 'cls'], 1, 3.2 * k, 1.8 * k]];
+        m.addLayer({
+          id: 'hwy-case', type: 'line', source: 'hwy', maxzoom: 10.5,
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': cssv('--road-case'), 'line-opacity': 0.9, 'line-width': hw(1.9) },
+        }, m.getLayer('county-line') ? 'county-line' : undefined);
+        m.addLayer({
+          id: 'hwy-line', type: 'line', source: 'hwy', maxzoom: 10.5,
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': cssv('--road-fill'), 'line-opacity': 1, 'line-width': hw(1) },
+        }, m.getLayer('county-line') ? 'county-line' : undefined);
+      }
+    } catch (err) { console.warn('highways unavailable', err); }
+    try {
+      const r = await fetch(`${base}/data/cities.geojson`);
+      if (r.ok && !m.getSource('cities')) {
+        // One label point per city: MapLibre labels every part of a
+        // multipart polygon, and a city annexed in pieces is several parts.
+        // The point is the centre of the largest part's bounding box and
+        // the acres are summed over the parts.
+        m.addSource('cities', { type: 'geojson', data: cityLabelPoints(await r.json()) });
+        // Big cities from z5, towns from z7, everything from z9.5: one layer
+        // per tier with a filter, since a zero-size label still claims its
+        // padding in collision and was knocking the big names out. The
+        // largest place first in placement order.
+        const tiers = [['big', ['>', ['get', 'acres'], 6000], 5],
+                       ['mid', ['all', ['>', ['get', 'acres'], 1200], ['<=', ['get', 'acres'], 6000]], 7],
+                       ['small', ['<=', ['get', 'acres'], 1200], 9.5]];
+        for (const [tier, filter, minzoom] of tiers) {
+          m.addLayer({
+            id: `city-label-${tier}`, type: 'symbol', source: 'cities', minzoom, filter,
+            layout: { 'symbol-placement': 'point', 'text-field': ['get', 'name'],
+                      'text-font': ['Noto Sans Bold'], 'text-padding': 4,
+                      'symbol-sort-key': ['-', 0, ['get', 'acres']],
+                      'text-size': ['interpolate', ['linear'], ['zoom'], 5, 11.5, 9.5, 12, 12, 14] },
+            paint: { ...labelPaint(), 'text-halo-width': 1.6 },
+          }, m.getLayer('parcel-sel-case') ? 'parcel-sel-case' : undefined);
+        }
+      }
+    } catch (err) { console.warn('city names unavailable', err); }
+  }
+
+  /** Roads (with their names) or buildings, on or off. */
+  setReference(kind, on) {
+    const ids = kind === 'roads'
+      ? ['road-case', 'road-line', 'road-label-major', 'road-label', 'hwy-case', 'hwy-line']
+      : ['bld-fill'];
+    for (const id of ids) {
+      if (this.map.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+    }
   }
 
   /** Outline one parcel by geocode; an empty id clears the outline. */
@@ -226,7 +422,7 @@ export class UnitMap {
     // are few and large, so they read best as an annotation: an outline, no
     // fill.
     if (kind === 'publiclands') {
-      const above = m.getLayer('parcel-hl') ? 'parcel-hl' : 'township-line';
+      const above = ['bld-fill', 'parcel-hl', 'township-line'].find((id) => m.getLayer(id));
       m.addLayer({
         id: 'ov-publiclands-fill', type: 'fill', source: 'ov-publiclands',
         paint: { 'fill-color': cssv('--public-land'), 'fill-opacity': 0.38 },
@@ -240,7 +436,7 @@ export class UnitMap {
       // City limits are annotation too: a dashed outline in a colour nothing
       // else on the map uses, no fill, above the parcels so the limit stays
       // legible at lot scale, where it is the question most often asked.
-      const above = m.getLayer('parcel-hl') ? 'parcel-hl' : 'township-line';
+      const above = ['bld-fill', 'parcel-hl', 'township-line'].find((id) => m.getLayer(id));
       m.addLayer({
         id: 'ov-cities-line', type: 'line', source: 'ov-cities',
         paint: { 'line-color': cssv('--city-limit'), 'line-dasharray': [3, 1.5],
@@ -257,6 +453,7 @@ export class UnitMap {
         paint: { 'line-color': cssv('--cat-2'), 'line-width': 2, 'line-opacity': 0.95 },
       });
     }
+    this.enforceOrder();
     return true;
   }
 
@@ -344,8 +541,9 @@ export class UnitMap {
    * relief layer AND the vector tiles the layers actually reference -- so every
    * source must be registered and each layer's `source` remapped; taking the
    * first key alone grafts the raster and every vector layer then fails with
-   * "requires a vector source". And symbol layers are skipped because they need
-   * a glyph server, which this style deliberately declares none of.
+   * "requires a vector source". The style's glyph and sprite endpoints are
+   * adopted so its label layers can be used: they ride ABOVE the parcels, so
+   * street and place names stay legible, and below the selection outlines.
    */
   async setBasemap(kind) {
     const m = this.map;
@@ -359,7 +557,7 @@ export class UnitMap {
     }
     this._baseLayers = [];
     this._baseSources = [];
-    if (kind === 'none') return;
+    if (kind === 'none') { m.setGlyphs(firstPartyGlyphs()); return; }
 
     const dark = document.documentElement.getAttribute('data-theme') === 'dark'
       || (!document.documentElement.getAttribute('data-theme')
@@ -369,6 +567,8 @@ export class UnitMap {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const style = await res.json();
 
+      if (style.glyphs) m.setGlyphs(style.glyphs);
+      if (style.sprite) m.setSprite(style.sprite);
       const srcMap = {};
       for (const [name, def] of Object.entries(style.sources || {})) {
         const id = `base-src-${name}`;
@@ -379,12 +579,13 @@ export class UnitMap {
       // Graft beneath our own fills so the choropleth stays on top.
       const beneath = ['township-fill', 'county-fill']
         .find((id) => m.getLayer(id));
+      const labelsBefore = ['parcel-sel-case', 'township-sel'].find((id) => m.getLayer(id));
       for (const layer of style.layers || []) {
-        if (layer.type === 'background' || layer.type === 'symbol') continue;
+        if (layer.type === 'background') continue;
         const src = srcMap[layer.source];
         if (!src) continue;
         const id = `base-${layer.id}`;
-        m.addLayer({ ...layer, id, source: src }, beneath);
+        m.addLayer({ ...layer, id, source: src }, layer.type === 'symbol' ? labelsBefore : beneath);
         this._baseLayers.push(id);
       }
       // Our own fills become translucent so the basemap reads through.
@@ -398,6 +599,7 @@ export class UnitMap {
       console.warn('basemap unavailable; outlines only', err);
       this._basemapKind = 'none';
     }
+    this.enforceOrder();
     if (kind === 'none' || this._basemapKind === 'none') {
       for (const id of ['township-fill', 'county-fill']) {
         if (m.getLayer(id)) {
@@ -425,6 +627,18 @@ export class UnitMap {
       .getPropertyValue('--map-line').trim() || '#a0967f';
     if (this.map.getLayer('township-line')) this.map.setPaintProperty('township-line', 'line-color', line);
     if (this.map.getLayer('county-line')) this.map.setPaintProperty('county-line', 'line-color', cssv('--county-line'));
+    if (this.map.getLayer('parcel-hl')) this.map.setPaintProperty('parcel-hl', 'line-color', cssv('--created') || '#c4188f');
+    for (const [id, prop, tok] of [['bld-fill', 'fill-color', '--building'], ['road-case', 'line-color', '--road-case'],
+                                   ['hwy-case', 'line-color', '--road-case'], ['hwy-line', 'line-color', '--road-fill']]) {
+      if (this.map.getLayer(id)) this.map.setPaintProperty(id, prop, cssv(tok));
+    }
+    if (this.map.getLayer('road-line')) this.map.setPaintProperty('road-line', 'line-color', roadColor());
+    for (const id of ['road-label-major', 'road-label', 'city-label-big', 'city-label-mid', 'city-label-small']) {
+      if (!this.map.getLayer(id)) continue;
+      const lp = labelPaint();
+      this.map.setPaintProperty(id, 'text-color', lp['text-color']);
+      this.map.setPaintProperty(id, 'text-halo-color', lp['text-halo-color']);
+    }
     if (this.map.getLayer('parcel-sel-case')) this.map.setPaintProperty('parcel-sel-case', 'line-color', cssv('--page') || '#ffffff');
     if (this.map.getLayer('parcel-sel')) this.map.setPaintProperty('parcel-sel', 'line-color', cssv('--ui') || '#04665e');
     const sel = getComputedStyle(document.documentElement)

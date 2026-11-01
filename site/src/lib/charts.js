@@ -74,6 +74,11 @@ export function showTip(html, ev) {
 export function hideTip() { if (_tip) _tip.hidden = true; }
 
 /* ------------------------------------------------------------------- scales */
+/** Largest finite value, 0 when there is none; NaN gaps must not poison an axis. */
+function finiteMax(values) {
+  const v = Array.from(values).filter(Number.isFinite);
+  return v.length ? Math.max(...v) : 0;
+}
 function niceMax(v) {
   if (!(v > 0)) return 1;
   const mag = 10 ** Math.floor(Math.log10(v));
@@ -247,7 +252,11 @@ export function lineChart(host, {
   host.appendChild(wrap);
   const f = frame(wrap, { height });
   const n = xLabels.length;
-  const max = yMax || niceMax(Math.max(...series.flatMap((s) => Array.from(s))));
+  // A gap in a series is a NaN (the agricultural line at 2009-07-05, whose
+  // export carries no agricultural block). Math.max over a NaN is NaN, which
+  // niceMax read as "no data" and scaled the axis to 1, so every real value
+  // was drawn far above the frame and the chart looked empty. Finite only.
+  const max = yMax || niceMax(finiteMax(series.flatMap((s) => Array.from(s))));
   yAxis(f.svg, f, max, fmt);
   const X = (i) => f.x0 + (n === 1 ? 0 : (i / (n - 1)) * (f.x1 - f.x0));
   const Y = (v) => f.y1 - (max ? (v / max) * (f.y1 - f.y0) : 0);
@@ -310,7 +319,7 @@ export function histogram(host, {
   host.appendChild(wrap);
   const f = frame(wrap, { height });
   const n = values.length;
-  const max = niceMax(Math.max(...values));
+  const max = niceMax(finiteMax(values));
   yAxis(f.svg, f, max, fmt);
   const bw = (f.x1 - f.x0) / n;
   const fill = color || cssVar('--cat-1');
@@ -348,7 +357,7 @@ export function rankBars(host, { items, color, fmt = fmtInt, caption, max: given
   host.appendChild(wrap);
   const rowH = 19;
   const f = frame(wrap, { height: Math.max(40, items.length * rowH + 10), padL: 112, padB: 6, padT: 4 });
-  const max = givenMax || niceMax(Math.max(...items.map((d) => d.value)));
+  const max = givenMax || niceMax(finiteMax(items.map((d) => d.value)));
   const fill = color || cssVar('--cat-1');
   items.forEach((d, i) => {
     const y = f.y0 + i * rowH;

@@ -34,6 +34,11 @@
   Content-Type: application/vnd.mapbox-vector-tile
   Cache-Control: public, max-age=86400
 
+# Label glyphs (Noto Sans, vendored; see fonts/LICENSE.txt). They never change.
+/fonts/*
+  Content-Type: application/x-protobuf
+  Cache-Control: public, max-age=31536000, immutable
+
 # Astro fingerprints everything under _astro/, so it is immutable.
 /_astro/*
   Cache-Control: public, max-age=31536000, immutable

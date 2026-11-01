@@ -144,7 +144,7 @@ then takes ~34 s. It is a no-op for shapefiles.
 | vintage | field | symptom | handling |
 |---|---|---|---|
 | 2004-07-16 | `AREA` | entirely zero, 833,537 rows, max 0.0 (2005 median: 13,865 m²) | derive acres from geometry; the only geometry read in the pipeline |
-| 2009-07-05 | `TOT_FB_VAL`, `TOT_FL_VAL`, `VALUE_MRF` | all three entirely zero, 908,662 rows (neighbours: 46.4%, 47.1%) | `improved = -1` (unknown), **never 0** |
+| 2009-07-05 | `TOT_FB_VAL`, `TOT_FL_VAL`, `VALUE_MRF` | all three entirely zero, 908,662 rows (neighbours: 46.4%, 47.1%); a separate download of the same vintage checked 2026-10-31 is byte-identical (md5 of the .dbf), so the dead block is the DOR export itself, not the archive copy | `improved = -1` (unknown), **never 0** |
 
 Both are handled by a general degeneracy rule — a numeric field whose
 strictly-positive share falls below a threshold is dead for that vintage — not
@@ -545,7 +545,8 @@ Four traps, each found by sampling the hits:
 Flagged parcels leave the ladder everywhere: the aggregate cubes count them
 in their own column (`n_dev4`, label `common_area`), the absorption cohorts
 and dormant inventory drop them, and the parcel tiles carry `dev = 4` so the
-Development view paints them in the public-land green and names them in its
+Development view paints them chartreuse (#80ff00, apart from the public-land
+green) and names them in its
 key. The per-parcel `common_area_src` bitmask (1 legal, 2 non-valued, 4
 association, 8 tract-named owner) travels in the extract for QA.
 
@@ -571,7 +572,9 @@ One vintage is a known exception. 2009-07-05 ships its value block dead, so
 improvement status is unknown there and the legal signal runs unguarded: it
 flags 5,270 parcels against 3,802 and 4,299 in the vintages either side,
 roughly a thousand more legal hits than either neighbour. The Development
-view already masks that vintage as "no data", dormant inventory is measured
-on the latest vintage, and the absorption cohorts never read a stage from
-it, so nothing published rests on it; the share-of-platted-lots figure for
-that vintage is null in the QA rather than wrong.
+view leaves that vintage out of the ladder-over-time chart and says so on
+the card (a wedge of "no data" was drawn first and read as a collapse),
+dormant inventory is measured on the latest vintage, and the absorption
+cohorts never read a stage from it, so nothing published rests on it; the
+share-of-platted-lots figure for that vintage is null in the QA rather than
+wrong.

@@ -289,7 +289,8 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
 
     # ---- geometry
     for g in ("townships.geojson", "counties.geojson",
-              "reservations.geojson", "publiclands.geojson", "cities.geojson"):
+              "reservations.geojson", "publiclands.geojson", "cities.geojson",
+              "highways.geojson", "lidar_coverage.geojson"):
         src = os.path.join(LOC_DIR, g)
         if os.path.exists(src):
             shutil.copy(src, os.path.join(out_dir, g))

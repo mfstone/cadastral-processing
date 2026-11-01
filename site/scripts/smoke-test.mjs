@@ -24,7 +24,8 @@ const DATA = [
   'county_stock.parquet', 'county_flow.parquet', 'county_owner_state.parquet',
   'absorption.parquet', 'size_histogram.parquet', 'dormant.parquet',
   'owner_state/CA.parquet', 'reservation_stock.parquet',
-  'reservations.geojson', 'publiclands.geojson', 'cities.geojson',
+  'reservations.geojson', 'publiclands.geojson', 'cities.geojson', 'highways.geojson',
+  'lidar_coverage.geojson',
   'holdings_county.parquet', 'holdings_top.parquet', 'holdings_review.parquet',
 ];
 
@@ -84,7 +85,7 @@ const subText = await page.$eval('#sub', (e) => e.textContent.trim());
 ok('header reports the series', /29 vintages/.test(subText), subText);
 
 const views = await page.$$eval('#nav button', (bs) => bs.map((b) => b.textContent.trim()));
-ok('all seven views present', views.length === 7, views.join(', '));
+ok('all eight views present, About last', views.length === 8 && views[7] === 'About', views.join(', '));
 
 // Map rendered something.
 const canvas = await page.$('#map canvas');
@@ -100,8 +101,10 @@ const legendHtml = await page.$eval('#legend', (e) => e.innerHTML);
 ok('legend is populated with a ramp', legendHtml.includes('class="ramp"'));
 ok('legend states the mask meaning', /no comparable data/i.test(legendHtml));
 
-// Each view renders at least one chart, and populated -- not merely present.
+// Each chart view renders at least one chart, and populated -- not merely
+// present. About is prose and has its own checks further down.
 for (let i = 0; i < views.length; i++) {
+  if (views[i] === 'About') continue;
   await page.evaluate((n) => document.querySelectorAll('#nav button')[n].click(), i);
   await new Promise((r) => setTimeout(r, 1800));
   const info = await page.evaluate(() => {
@@ -164,9 +167,99 @@ await new Promise((r) => setTimeout(r, 7000));
 const pc = await page.evaluate(() =>
   window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] }).length);
 ok('parcels render at z12', pc > 500, `${pc} features`);
+// The agricultural-acreage line has a deliberate gap (NaN) at 2009-07-05;
+// the chart must scale to the finite values and draw inside its frame.
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Fragmentation') b.click(); });
+await new Promise((r) => setTimeout(r, 4000));
+const agChart = await page.evaluate(() => {
+  const card = Array.from(document.querySelectorAll('#panel .card'))
+    .find((c) => /Agricultural-use acreage/.test(c.textContent));
+  if (!card) return { card: false };
+  const svg = card.querySelector('svg');
+  const path = Array.from(card.querySelectorAll('svg path')).find((p) => (p.getAttribute('d') || '').length > 20);
+  const d = path ? path.getAttribute('d') : '';
+  const ys = Array.from(d.matchAll(/[ML][\d.]+,([\d.-]+)/g)).map((m) => Number(m[1]));
+  const h = Number(svg?.getAttribute('height') || svg?.viewBox?.baseVal?.height || 0);
+  return { card: true, points: ys.length, inFrame: ys.every((y) => y >= 0 && y <= h), h, ymin: Math.min(...ys), ymax: Math.max(...ys) };
+});
+ok('agricultural acreage line draws inside its frame',
+  agChart.card && agChart.points >= 20 && agChart.inFrame, JSON.stringify(agChart));
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await new Promise((r) => setTimeout(r, 3000));
+
+// The About view: how to use, how to read, where it comes from, caveats,
+// and the Episteme contact link; the map comes back when it is left.
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'About') b.click(); });
+await new Promise((r) => setTimeout(r, 1500));
+const about = await page.evaluate(() => ({
+  cards: document.querySelectorAll('#panel .card').length,
+  contact: document.querySelector('#panel a[href*="epistemegeospatial.com/contact"]')?.getAttribute('href') || '',
+  doi: !!document.querySelector('#panel a[href*="doi.org"]'),
+  mapHidden: document.getElementById('mapwrap').offsetHeight === 0 }));
+ok('About view explains the dashboard and links to Episteme',
+  about.cards >= 6 && /epistemegeospatial\.com\/contact/.test(about.contact) && about.doi && about.mapHidden,
+  JSON.stringify(about));
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await new Promise((r) => setTimeout(r, 2500));
+const back = await page.evaluate(() => ({
+  mapShown: document.getElementById('mapwrap').offsetHeight > 0,
+  canvas: window.__map.map.getCanvas().width > 0 }));
+ok('leaving About restores the map', back.mapShown && back.canvas, JSON.stringify(back));
+
+// First-party reference layers: roads from the same tiles, named from the
+// vendored glyphs, and buildings where lidar has flown. Nothing is fetched
+// from a third party by default: the basemap select starts at outlines only.
+const glyphRes = await fetch(`${BASE}/fonts/Noto%20Sans%20Regular/0-255.pbf`);
+ok('label glyphs are served first-party',
+  glyphRes.ok && (await glyphRes.arrayBuffer()).byteLength > 10000, `status ${glyphRes.status}`);
+// Livingston: inside a lidar project area, so footprints exist (Bozeman is not).
+await page.evaluate(() => window.__map.map.jumpTo({ center: [-110.56, 45.66], zoom: 13.4 }));
+await new Promise((r) => setTimeout(r, 7000));
+const ref = await page.evaluate(() => {
+  const mp = window.__map.map;
+  const q = (l) => (mp.getLayer(l) ? mp.queryRenderedFeatures({ layers: [l] }).length : -1);
+  return { roads: q('road-line'), buildings: q('bld-fill'), labels: q('road-label') + q('road-label-major'),
+           base: mp.getStyle().layers.filter((l) => l.id.startsWith('base-')).length,
+           glyphs: String(mp.getStyle().glyphs || ''), basemap: document.getElementById('basemap').value };
+});
+ok('roads and buildings draw from the parcel tiles', ref.roads > 50 && ref.buildings > 50,
+  JSON.stringify({ roads: ref.roads, buildings: ref.buildings }));
+ok('road names render from first-party glyphs',
+  ref.labels > 0 && /\/fonts\//.test(ref.glyphs) && !/openfreemap/.test(ref.glyphs),
+  JSON.stringify({ labels: ref.labels, glyphs: ref.glyphs }));
+ok('no external basemap by default', ref.basemap === 'none' && ref.base === 0,
+  JSON.stringify({ basemap: ref.basemap, base: ref.base }));
+// The OpenStreetMap basemap stays available as an explicit choice, and tears down.
+await page.evaluate(() => { const s = document.getElementById('basemap'); s.value = 'positron'; s.dispatchEvent(new Event('change')); });
+await new Promise((r) => setTimeout(r, 9000));
+const osm = await page.evaluate(() => {
+  const mp = window.__map.map;
+  const symbols = mp.getStyle().layers.filter((l) => l.id.startsWith('base-') && l.type === 'symbol').map((l) => l.id);
+  return { symbols: symbols.length, labels: symbols.length ? mp.queryRenderedFeatures({ layers: symbols }).length : 0,
+           osm: /OpenStreetMap/.test(document.querySelector('.maplibregl-ctrl-attrib')?.textContent || '') };
+});
+ok('OpenStreetMap basemap loads on request, with labels and credit',
+  osm.symbols > 5 && osm.labels > 0 && osm.osm, JSON.stringify(osm));
+await page.evaluate(() => { const s = document.getElementById('basemap'); s.value = 'none'; s.dispatchEvent(new Event('change')); });
+await new Promise((r) => setTimeout(r, 1500));
+const baseAfter = await page.evaluate(() => ({
+  base: window.__map.map.getStyle().layers.filter((l) => l.id.startsWith('base-')).length,
+  glyphs: String(window.__map.map.getStyle().glyphs || '') }));
+ok('external basemap tears down and glyphs return to first-party',
+  baseAfter.base === 0 && /\/fonts\//.test(baseAfter.glyphs) && !/openfreemap/.test(baseAfter.glyphs),
+  JSON.stringify(baseAfter));
 
 const legendMode = await page.evaluate(() => document.getElementById('legend').dataset.mode);
 ok('legend switches to the parcel key at depth', legendMode === 'parcel', legendMode);
+// The magenta outline is the one thing on the parcel map that follows the
+// slider; the key must say what it is and name the vintage it refers to.
+const keyText = await page.evaluate(() => ({
+  text: document.getElementById('legend').innerText,
+  swatch: !!document.querySelector('#legend .pl i.ol'),
+  date: document.getElementById('snaplabel').textContent.trim() }));
+ok('parcel key explains the magenta outline and names the vintage',
+  keyText.swatch && /first seen in/.test(keyText.text) && keyText.text.includes(keyText.date),
+  JSON.stringify({ swatch: keyText.swatch, date: keyText.date, text: keyText.text.slice(0, 120) }));
 
 const popup = await page.evaluate(() => {
   const f = window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] })[0];
@@ -189,15 +282,20 @@ const selId = await page.evaluate(() => {
   window.__map.selectParcel(f.properties.id);
   return f.properties.id;
 });
-await new Promise((r) => setTimeout(r, 800));
-const selDrawn = await page.evaluate(() => {
-  const ids = window.__map.map.queryRenderedFeatures({ layers: ['parcel-sel'] }).map((x) => x.properties.id);
-  window.__map.selectParcel('');
-  return Array.from(new Set(ids));
-});
-await new Promise((r) => setTimeout(r, 800));
-const selCleared = await page.evaluate(() =>
-  window.__map.map.queryRenderedFeatures({ layers: ['parcel-sel'] }).length);
+let selDrawn = [];
+for (let i = 0; i < 12 && !selDrawn.length; i++) {
+  await new Promise((r) => setTimeout(r, 400));
+  selDrawn = await page.evaluate(() => Array.from(new Set(
+    window.__map.map.queryRenderedFeatures({ layers: ['parcel-sel'] }).map((x) => x.properties.id))));
+}
+await page.evaluate(() => window.__map.selectParcel(''));
+// The clear shows up a frame or two later; poll rather than guess the delay.
+let selCleared = -1;
+for (let i = 0; i < 12 && selCleared !== 0; i++) {
+  await new Promise((r) => setTimeout(r, 400));
+  selCleared = await page.evaluate(() =>
+    window.__map.map.queryRenderedFeatures({ layers: ['parcel-sel'] }).length);
+}
 const selCheck = selId ? { id: selId, drawn: selDrawn, cleared: selCleared } : null;
 ok('clicked parcel is outlined as selected',
   !!selCheck && selCheck.drawn.length === 1 && selCheck.drawn[0] === selCheck.id && selCheck.cleared === 0,

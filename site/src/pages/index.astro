@@ -64,7 +64,7 @@ import '../styles/viz.css';
       <label for="basemap">Basemap
         <select id="basemap">
           <option value="none" selected>Outlines only</option>
-          <option value="positron">Street</option>
+          <option value="positron">OpenStreetMap (external)</option>
         </select>
       </label>
       <label for="mask"><input id="mask" type="checkbox" checked /> Mask low coverage</label>
@@ -82,6 +82,8 @@ import '../styles/viz.css';
           <label><input type="checkbox" id="lyr-parcels" checked /> Parcels <span class="hint">(above z10)</span></label>
           <label><input type="checkbox" id="lyr-townships" checked /> Township grid</label>
           <label><input type="checkbox" id="lyr-counties" checked /> County boundaries</label>
+          <label><input type="checkbox" id="lyr-roads" checked /> Roads <span class="hint">(MDT, with names)</span></label>
+          <label><input type="checkbox" id="lyr-buildings" checked /> Buildings <span class="hint">(lidar areas)</span></label>
           <hr />
           <label><input type="checkbox" id="lyr-reservations" /> <span style="border-bottom:2px solid var(--cat-2)">Reservations</span></label>
           <label><input type="checkbox" id="lyr-publiclands" /> <span style="border-bottom:3px solid var(--public-land)">Public lands</span> <span class="hint">(0.9 MB)</span></label>

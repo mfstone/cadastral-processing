@@ -136,6 +136,7 @@ view as a range between the document tier and the maximal tier.
 | `timeseries/tenure_area.py` | public-land area overlap per parcel |
 | `timeseries/holdings.py` | large-holding and concentration metrics |
 | `timeseries/regress.py` | regression against the published Table 1 |
+| `timeseries/reference.py` | MDT road centerlines + lidar building footprints staged into the parcel tiles; statewide highways and city names for the low zooms (labels from vendored Noto Sans glyphs under `site/public/fonts`) |
 
 ## ORION integration (DOR CAMA database)
 

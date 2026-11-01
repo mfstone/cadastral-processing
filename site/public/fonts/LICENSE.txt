@@ -1,0 +1,9 @@
+Glyph ranges for Noto Sans Regular and Noto Sans Bold (code points 0-2047),
+in the MapLibre/Mapbox signed-distance-field PBF format, taken from the
+OpenFreeMap font service (https://tiles.openfreemap.org/fonts/) on
+2026-10-31 so the dashboard serves its own labels and fetches nothing from a
+third party at run time.
+
+Noto is a trademark of Google LLC. Noto fonts are open source, licensed under
+the SIL Open Font License, Version 1.1:
+https://openfontlicense.org/open-font-license-official-text/

@@ -26,6 +26,12 @@ in a handful of tiles, 1.8 MB each, to draw a grey smear. They are generated and
 then deleted: the source ``minzoom`` is 10 and the township choropleth owns every
 zoom below that, which is the view where an aggregate is the honest answer.
 
+**Roads and buildings ride in the same tiles.** The file cap rules out a
+second pyramid (roads are in every tile), so ``reference.py`` stages the MDT
+road centerlines and the lidar building footprints as two more layers of the
+same tileset, through a VRT that unites the three FlatGeobufs. They cost
+bytes, not files.
+
 **Tiles are stored decompressed.** GDAL's MVT driver gzips tile bodies by
 default, which requires a ``Content-Encoding: gzip`` response header. Cloudflare
 Pages can be told to send one through ``_headers``; ``astro preview`` cannot, so
@@ -62,6 +68,7 @@ import pandas as pd
 
 from . import geocode as gc
 from . import holdings
+from . import reference
 from . import locality
 from . import ownerclass as oc
 from . import sources
@@ -192,13 +199,43 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
     return m
 
 
-def tile(src_path: str, out_dir: str) -> None:
-    """Run GDAL's MVT driver over the staged source."""
+LAYER_ZOOMS = {
+    # Roads ride in every parcel tile from z10; buildings are sub-pixel below
+    # z12 and are written there only, overzooming from it. Per-layer zooms go
+    # through the driver's CONF option, which also stops the parcels being
+    # generated at z6-9 only to be deleted.
+    "parcels": {"minzoom": MINZOOM, "maxzoom": MAXZOOM},
+    "roads": {"minzoom": MINZOOM, "maxzoom": MAXZOOM},
+    "buildings": {"minzoom": MAXZOOM, "maxzoom": MAXZOOM},
+}
+
+
+def write_vrt(path: str, layers: dict[str, str]) -> str:
+    """A VRT uniting one FlatGeobuf per layer, so one MVT run writes them all."""
+    body = ["<OGRVRTDataSource>"]
+    for name, fgb in layers.items():
+        stem = os.path.splitext(os.path.basename(fgb))[0]
+        body += [f'  <OGRVRTLayer name="{name}">',
+                 f'    <SrcDataSource relativeToVRT="0">{os.path.abspath(fgb)}</SrcDataSource>',
+                 f'    <SrcLayer>{stem}</SrcLayer>',
+                 '  </OGRVRTLayer>']
+    body.append("</OGRVRTDataSource>\n")
+    with open(path, "w") as fh:
+        fh.write("\n".join(body))
+    return path
+
+
+def tile(src_path: str, out_dir: str, conf: dict | None = None) -> None:
+    """Run GDAL's MVT driver over the staged source (every layer it holds)."""
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     t0 = time.time()
+    conf_path = f"{WORK_DIR}/mvt_conf.json"
+    with open(conf_path, "w") as fh:
+        json.dump(conf or {"parcels": LAYER_ZOOMS["parcels"]}, fh)
     cmd = ["ogr2ogr", "-f", "MVT", out_dir, src_path,
            "-dsco", f"MINZOOM={GENERATE_FROM}", "-dsco", f"MAXZOOM={MAXZOOM}",
+           "-dsco", f"CONF={conf_path}",
            # MAX_SIZE and MAX_FEATURES are *drop* thresholds, not warnings: GDAL
            # silently discards features from any tile that exceeds them. At the
            # defaults (500 KB / 200,000) the Billings z10 tile loses 38% of its
@@ -206,7 +243,7 @@ def tile(src_path: str, out_dir: str) -> None:
            # downtown as a hole. Both are set past the worst observed tile so
            # nothing is dropped, and audit() verifies that afterwards.
            "-dsco", "MAX_SIZE=20000000", "-dsco", "MAX_FEATURES=1000000",
-           "-dsco", "COMPRESS=NO", "-nln", "parcels"]
+           "-dsco", "COMPRESS=NO"]
     subprocess.run(cmd, check=True)
     log.info("tiled in %.0f min", (time.time() - t0) / 60)
 
@@ -252,9 +289,10 @@ def decompress(out_dir: str) -> int:
     return n
 
 
-def _tile_features(path: str) -> int:
-    out = subprocess.run(["ogrinfo", "-ro", "-al", "-so", path],
-                         capture_output=True, text=True).stdout
+def _tile_features(path: str, layer: str | None = None) -> int:
+    """Feature count of one layer (or of the only layer) in a tile or source."""
+    cmd = ["ogrinfo", "-ro", "-so", path] + ([layer] if layer else ["-al"])
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout
     for line in out.splitlines():
         if line.strip().lower().startswith("feature count"):
             return int(line.split(":")[1])
@@ -271,7 +309,7 @@ def check_no_dropped_features(out_dir: str, n_source: int) -> dict:
     bound that must be *at least* the source count.
     """
     zdir = f"{out_dir}/{MAXZOOM}"
-    total = sum(_tile_features(os.path.join(root, f))
+    total = sum(_tile_features(os.path.join(root, f), "parcels")
                 for root, _, files in os.walk(zdir) for f in files
                 if f.endswith(".pbf"))
     ratio = total / n_source if n_source else 0.0
@@ -333,12 +371,16 @@ def build(date: str | None = None, out_dir: str = OUT_DIR,
         n_source = _tile_features(src_path)
     else:
         n_source = len(build_source(date, src_path))
-    tile(src_path, out_dir)
+    ref = reference.stage(WORK_DIR, reuse=reuse_source)
+    vrt = write_vrt(f"{WORK_DIR}/tiles.vrt", {"parcels": src_path, **ref})
+    tile(vrt, out_dir, LAYER_ZOOMS)
     trim_low_zooms(out_dir)
     decompress(out_dir)
     qa = audit(out_dir)
     qa.update(check_no_dropped_features(out_dir, n_source))
     qa["date"] = date
+    qa["layers"] = {name: {**LAYER_ZOOMS[name], "source_features": _tile_features(p)}
+                    for name, p in {"parcels": src_path, **ref}.items()}
     with open(f"{out_dir}/tiles_qa.json", "w") as fh:
         json.dump(qa, fh, indent=1)
     return qa

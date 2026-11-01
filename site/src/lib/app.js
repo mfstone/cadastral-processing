@@ -124,11 +124,18 @@ const fmtShort = (v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
 function parcelLegendHTML() {
   const items = PARCEL_LEGEND[S.view] || [];
   if (!items.length) return '';
+  const when = S.dim.snapshots[S.snap]?.date || 'the selected vintage';
   return `<div class="title">Parcels &mdash; ${VIEWS[S.view].parcelLegend || 'colour key'}</div>`
     + items.map(([label, tok]) =>
         `<div class="pl"><i style="background:${cssVar('--' + tok)}"></i>${label}</div>`).join('')
-    + '<div class="note">Attributes are the 2026 state; outline marks parcels '
-    + 'created in the selected interval.</div>';
+    // The one thing on the parcel map that follows the slider: an outline on
+    // the parcels that did not exist in the previous vintage.
+    + `<div class="pl"><i class="ol" style="border-color:${cssVar('--created')}"></i>`
+    + `first seen in ${when}: a new plat or a split since the previous vintage `
+    + '(or, in the early years, a county\u2019s data arriving)</div>'
+    + '<div class="note">Colours are the 2026 state of each parcel. Parcels are '
+    + 'drawn as they exist today, so one split later shows as its pieces at every '
+    + 'date; move the snapshot slider to see which parcels were new at each vintage.</div>';
 }
 
 function refreshLegendForZoom() {
@@ -211,9 +218,10 @@ function parcelStyle() {
   switch (S.view) {
     case 'ladder':
       // 4 = dedicated common area (open space, park, HOA tract): on the map in
-      // the public-land green, off the ladder in every count.
+      // chartreuse, a colour apart from the public-land green so the two kinds
+      // of green cannot be read as one; off the ladder in every count.
       return [['match', ['get', 'dev'], 0, ord3[0], 1, ord3[1], 2, ord3[2],
-        4, cssVar('--public-land'), masked], bornHere];
+        4, cssVar('--open-space'), masked], bornHere];
     case 'ownership': {
       const by = S.measure === 'acres' ? 'loc' : 'ten';
       if (by === 'ten') {
@@ -262,7 +270,7 @@ function parcelStyle() {
 
 const PARCEL_LEGEND = {
   ladder: [['platted only', 'ord3-1'], ['addressed', 'ord3-2'], ['built', 'ord3-3'],
-           ['common area / open space (off the ladder)', 'public-land']],
+           ['common area / open space (off the ladder)', 'open-space']],
   ownership: [['public domain', 'cat-1'], ['tribal trust', 'cat-2'], ['private', 'cat-3']],
   fragmentation: [['<5 ac', 'ord5-1'], ['5-40', 'ord5-2'], ['40-160', 'ord5-3'],
                   ['160-640', 'ord5-4'], ['>640', 'ord5-5']],
@@ -325,21 +333,23 @@ VIEWS.ladder = {
     // unknown there rather than zero. Drawn as its own masked band: without it
     // the stack collapses to a white wedge that reads as a rendering fault
     // instead of as missing data.
-    const unknown = seriesOf(c, 'n_dev3', units);
-    const hasUnknown = Array.from(unknown).some((v) => v > 0);
     // Dedicated common areas are counted apart (n_dev4) and never enter the
     // ladder's shares; the tile below says how many were set aside.
     const common = seriesOf(c, 'n_dev4', units);
-    const use = (S.measure === 'acres' ? acr : ser).slice();
+    // A vintage whose export carries no building values (2009-07-05) puts
+    // every parcel at "unknown". It is left out of the chart rather than drawn
+    // as a wedge of no data, so the stack runs from the vintage before it to
+    // the one after; the card says which vintage is missing.
+    const known = [...Array(S.nSnaps).keys()].filter((i) => (ser[0][i] + ser[1][i] + ser[2][i]) > 0);
+    const left = [...Array(S.nSnaps).keys()].filter((i) => !known.includes(i))
+      .map((i) => S.dim.snapshots[i].date);
+    const pick = (s) => known.map((i) => s[i] || 0);
+    const use = (S.measure === 'acres' ? acr : ser).map(pick);
     const stackLabels = ['platted only', 'addressed', 'built'];
     const stackColors = C.ramp('ord3', 3);
-    if (hasUnknown && S.measure !== 'acres') {
-      use.push(unknown);
-      stackLabels.push('no data');
-      stackColors.push(cssVar('--masked'));
-    }
+    const allLabels = snapLabels();
 
-    const tot = use.reduce((a, s) => a + s[S.snap], 0);
+    const tot = ser.reduce((a, s) => a + s[S.snap], 0);
     // Zeroes and NaN% here would read as a measurement; the explanatory card
     // above already says the vintage cannot report this.
     if (!gone.includes('development_ladder')) C.stats(
@@ -353,10 +363,11 @@ VIEWS.ladder = {
     ]);
 
     const k1 = C.card(panel, 'The ladder over time',
-      'Platted only → address assigned → assessed building value. A parcel with a house number carries a building 89–91% of the time. Dedicated common areas are not on the ladder.');
+      'Platted only → address assigned → assessed building value. A parcel with a house number carries a building 89–91% of the time. Dedicated common areas are not on the ladder.'
+      + (left.length ? ` The ${left.join(', ')} export carries no building values and is left out.` : ''));
     C.stackedArea(k1, {
       series: use, labels: stackLabels, colors: stackColors,
-      xLabels: snapLabels(), share: true,
+      xLabels: known.map((i) => allLabels[i]), share: true,
       fmt: S.measure === 'acres' ? C.fmtAc : C.fmtInt,
       caption: 'Ladder composition, table view',
     });
@@ -1064,6 +1075,139 @@ function selectionNote() {
   return `${S.selection.size} unit${S.selection.size > 1 ? 's' : ''}: ${names.join(', ')}${S.selection.size > 4 ? '…' : ''}`;
 }
 
+
+/* 8. About -- how to use it, how to read it, where it comes from */
+const CONTACT_URL = 'https://www.epistemegeospatial.com/contact';
+VIEWS.about = {
+  label: 'About',
+  legend: 'About this dashboard',
+  about: true,
+  async render(panel) {
+    const first = S.dim.snapshots[0].date, last = S.dim.snapshots[S.nSnaps - 1].date;
+    const section = (title, html) => {
+      const c = C.card(panel, title);
+      const d = document.createElement('div');
+      d.className = 'about';
+      d.innerHTML = html;
+      c.appendChild(d);
+    };
+
+    section('What this is', `
+      <p>Montana’s cadastral parcel layer, exported ${S.nSnaps} times between ${first} and ${last}
+      by the Montana State Library from the Department of Revenue’s records, read parcel by parcel
+      and compared vintage to vintage. Each export is a snapshot of every parcel in the state;
+      the differences between snapshots are the events: parcels created and retired, owners
+      changed, buildings assessed. Statistics are aggregated to ${S.meta.townships.toLocaleString()}
+      PLSS townships and ${S.meta.counties} counties, and the newest export’s parcels themselves
+      (about 887,000) are drawn once the map is zoomed past level 10.</p>
+      <p>It was built by <a href="https://www.epistemegeospatial.com/">Episteme Geospatial</a> as a
+      working instrument for the questions the cadastral record can answer: where land is being
+      divided, who owns it and from where, what has actually been built on it, and how concentrated
+      large private holdings have become.</p>`);
+
+    section('How to use it', `
+      <ul>
+        <li><strong>Tabs</strong> choose a view. Each view paints the map and fills this panel with its charts.</li>
+        <li><strong>The snapshot slider</strong> picks a vintage; the map, the tiles of numbers and the charts’
+          cursor follow it. The date shown is the export date, not an assessment date.</li>
+        <li><strong>Unit</strong> switches the aggregate surface between PLSS townships and counties.
+          <strong>Measure</strong> switches between parcels and acres where a view supports both.</li>
+        <li><strong>Click a unit</strong> on the map to focus every chart on it; shift-click adds units;
+          <em>Clear selection</em> returns to the statewide figures. The key in the map’s corner names what is painted.</li>
+        <li><strong>Mask low coverage</strong> greys out units whose record is not yet complete in that vintage;
+          the early years arrived county by county.</li>
+        <li><strong>Zoom in.</strong> Past level 10 the aggregate surface gives way to the parcels, coloured by the
+          view’s parcel key. Click a parcel for its geocode and attributes; no owner information is shown.
+          A <span style="color:var(--created);font-weight:700">magenta</span> outline marks parcels first seen in the
+          selected vintage.</li>
+        <li><strong>Layers</strong> adds the township grid, county boundaries, roads with their names, building
+          footprints where lidar has flown, reservations, public lands and city limits. The basemap is outlines only;
+          an OpenStreetMap basemap can be switched on, and only then does the page fetch anything from a third party.</li>
+        <li>The <strong>◐</strong> button toggles light and dark.</li>
+      </ul>`);
+
+    section('Reading the views', `
+      <p><strong>Development.</strong> Every parcel sits on a three-step ladder: <em>platted only</em> (no situs
+      address, no assessed building), <em>addressed</em> (a house number but no building value) and <em>built</em>
+      (an assessed building). The map shows the share of parcels addressed but unbuilt, the gap between
+      infrastructure and houses. The charts follow the ladder over time, the <em>absorption</em> of each creation
+      cohort (of the lots created at a vintage, the share carrying a building N years later) and the
+      <em>dormant inventory</em> (lots under 40 acres that have sat at the bottom of the ladder five years or more).
+      Dedicated common areas (open space, parks, HOA and condominium tracts) are counted apart and never climb.</p>
+      <p><strong>Ownership.</strong> Tenure (public domain, tribal trust, private) and the owner’s distance from
+      the land (the same place, the same county, elsewhere in Montana, out of state), both read from the mailing
+      address on the record. The map shows the out-of-state share; the charts add the trust-and-fee checkerboard
+      inside each reservation and where out-of-state owners mail from.</p>
+      <p><strong>Fragmentation.</strong> Acreage by parcel-size class, the share of acreage in parcels under 40
+      acres on the map, and agricultural-use acreage.</p>
+      <p><strong>Churn.</strong> How often parcels that persist from one vintage to the next change owner, per
+      year; transfers against address-only edits; and condominiumisation.</p>
+      <p><strong>Thresholds.</strong> The sizes of newly created parcels against the acreage lines in Montana’s
+      subdivision law. A pile-up just above a line is lots sized to clear it; the map shows new lots per
+      thousand parcels per year, and the era filter narrows the period.</p>
+      <p><strong>Holdings.</strong> A <em>holding</em> is one owner’s consolidated private acreage within a county;
+      <em>large</em> means 640 acres or more, one section. The map shows the four-property concentration ratio
+      (CLO4): the share of a county’s large-holding acreage held by its four largest. The charts count large
+      owners and their acreage, rank counties, class holdings by size, draw the Lorenz curve and Gini, and compare
+      the result with the published Table 1. Owners are identified by mailing address, with bridges for entities
+      and couples, and two tiers (document and maximal) bound what a manual review could change.</p>
+      <p><strong>Review.</strong> The method expects a reviewer. This view shows what one would decide: large
+      holdings that rest on an unmade decision (an entity merge, a token name, a pending match, an ORION bridge),
+      parcels on which the two public-land tests disagree, and how a decision is recorded.</p>`);
+
+    section('Where the analyses come from', `
+      <p>The holdings and review analyses follow Haggerty, Epstein, Gosnell, Rose and Stone (2022),
+      <em>Rural Land Concentration &amp; Protected Areas: Recent Trends from Montana and Greater Yellowstone</em>,
+      Society &amp; Natural Resources 35(6): 692–700,
+      <a href="https://doi.org/10.1080/08941920.2022.2038318">doi:10.1080/08941920.2022.2038318</a>, and the
+      consolidation methodology in its supplement. The Holdings view reports this dashboard’s residuals against
+      that paper’s Table 1 so the reproduction can be judged.</p>
+      <p>The development ladder, absorption, dormant inventory, churn and threshold analyses were constructed for
+      this dashboard from the same records. Each card’s caption states its definition, and the measured decisions
+      behind them are kept in the project’s findings log.</p>
+      <p>Data: the Montana Cadastral Framework (Montana State Library and Department of Revenue), ${S.nSnaps}
+      exports from ${first} to ${last}; the Montana Public Lands layer (State Library, 2026) for public domain by
+      area; reservations and incorporated cities (State Library); the Transportation Framework road centerlines
+      (State Library and Department of Transportation, June 2026); lidar building footprints (State Library, 37
+      project areas); and Department of Revenue ORION party identifiers to bridge owners in the 2024 to 2026
+      vintages.</p>`);
+
+    section('Caveats', `
+      <ul>
+        <li>Vintages are export dates. 2002 is excluded (it lacks the counties where parcels are created) and no
+          2012 or 2015 export exists, so events spanning those gaps are dated to the interval.</li>
+        <li>Coverage arrived county by county through 2007; the comparable series begins in
+          ${S.meta.comparable_series_begins}. The coverage mask is on by default for that reason.</li>
+        <li>The 2009-07-05 export ships its value and agricultural columns entirely zero. Improvement status and
+          agricultural acreage are unknown there, not zero, and that vintage is left out of the charts that need them.</li>
+        <li>The ladder is probabilistic: a parcel with a house number carries an assessed building 89 to 91% of the
+          time, and some parcels carry a building with no house number.</li>
+        <li>Owner location is a mailing address, not a residence.</li>
+        <li>Public domain comes from one 2026 public-lands layer applied to every year, decided by area overlap;
+          tribal trust comes from owner names, because trust land is absent from that layer. A reservation boundary
+          is jurisdiction, not ownership.</li>
+        <li>Owner identity follows the method’s address key. No manual review has been performed; the Review view
+          shows the range a reviewer could move, and nothing is assumed in either direction.</li>
+        <li>Dedicated common areas are flagged by rule (the Non-Valued property type inside a subdivision, an
+          association or tract-named owner, or an open-space phrase in the legal description of an unbuilt parcel);
+          the rule touches 7.7% of platted-only subdivision lots under 40 acres and 0.3% of built parcels.</li>
+        <li>The parcels drawn are the newest export’s. A parcel split later shows as its pieces at every date;
+          the magenta outline is the one thing on the parcel map that follows the slider.</li>
+        <li>Parcel geometry is generalised for the tiles (about 2.4 m). Building footprints exist only where lidar
+          has flown, about an eighth of the state; roads are as of June 2026.</li>
+        <li>Agricultural-use acreage is clamped to each parcel’s own area, since some exports report more
+          agricultural acres than mapped acres.</li>
+        <li>No parcel-level owner information is published. The largest holdings are named from the public
+          cadastral record.</li>
+      </ul>`);
+
+    section('Questions and comments', `
+      <p>This dashboard is a project of <a href="https://www.epistemegeospatial.com/">Episteme Geospatial</a>.
+      Comments, corrections and questions are welcome through the
+      <a href="${CONTACT_URL}">contact page</a>.</p>`);
+  },
+};
+
 /* -------------------------------------------------------------------- wiring */
 async function render() {
   const panel = $('panel');
@@ -1077,7 +1221,7 @@ async function render() {
     const c = C.card(panel, 'Could not render this view');
     c.appendChild(document.createTextNode(String(err && err.message ? err.message : err)));
   }
-  caveatCard(panel);
+  if (!VIEWS[S.view].about) caveatCard(panel);
 }
 
 function caveatCard(panel) {
@@ -1106,6 +1250,10 @@ function buildControls() {
       $('erawrap').hidden = k !== 'thresholds';
       $('originwrap').hidden = k !== 'ownership';
       $('level').disabled = (k === 'holdings' || k === 'review');
+      // About is prose: the map and filters step aside, and the map is told
+      // its size again when they come back.
+      document.body.classList.toggle('about', k === 'about');
+      if (k !== 'about' && S.map) setTimeout(() => S.map.map.resize(), 0);
       render();
     });
     nav.appendChild(b);
@@ -1166,6 +1314,8 @@ function buildControls() {
     const v = e.target.checked ? 'visible' : 'none';
     if (S.map.map.getLayer('county-line')) S.map.map.setLayoutProperty('county-line', 'visibility', v);
   });
+  $('lyr-roads').addEventListener('change', (e) => S.map.setReference('roads', e.target.checked));
+  $('lyr-buildings').addEventListener('change', (e) => S.map.setReference('buildings', e.target.checked));
   for (const [kind, file, label] of [
     ['reservations', 'reservations.geojson', 'reservations'],
     ['publiclands', 'publiclands.geojson', 'public lands'],
@@ -1229,7 +1379,7 @@ export async function boot() {
         ['stage', L.dev_stage[Number(props.dev)] ? L.dev_stage[Number(props.dev)].replace(/_/g, ' ') : 'unknown'],
         ['tenure', (L.tenure[Number(props.ten)] || '').replace('_', ' ')],
         ['owner distance', L.locality[Number(props.loc)] || '-'],
-        ['created', bornTxt],
+        ['created', bornTxt + (born === S.snap ? ' \u00b7 outlined in magenta at this slider position' : '')],
       ];
       if (props.hs != null && Number(props.hs) >= 0) {
         const cls = (L.holding_size || [])[Number(props.hs)] || '';
@@ -1261,6 +1411,9 @@ export async function boot() {
   window.__map = S.map;
   window.__state = S;
   await S.map.init({ townships, counties });
+  // The street basemap is the default reference; if its origin is
+  // unreachable the map falls back to outlines only on its own.
+  if ($('basemap').value !== 'none') S.map.setBasemap($('basemap').value);
   // The legend must follow the surface the reader is actually looking at.
   S.map.map.on('zoomend', refreshLegendForZoom);
   } catch (err) {

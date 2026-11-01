@@ -44,6 +44,9 @@
   --public-land: #2b7a4b;
   --county-line: #000000;
   --city-limit: #ffe100;
+  --created: #c4188f;
+  --open-space: #80ff00;
+  --road-fill: #ffffff; --road-case: #b4ab99; --road-major: #6e6657; --building: #5a5347;
   --map-ground: #ece5d5;
   --map-line: #a0967f;
 }
@@ -74,6 +77,9 @@
     --public-land: #4fae76;
     --county-line: #f7f4ec;
     --city-limit: #ffe100;
+    --created: #ff57cf;
+    --open-space: #80ff00;
+    --road-fill: #4a4434; --road-case: #0f0d09; --road-major: #c6bfae; --building: #d9d1be;
     --map-ground: #16140f;
     --map-line: #514938;
   }
@@ -104,6 +110,9 @@
     --public-land: #4fae76;
     --county-line: #f7f4ec;
     --city-limit: #ffe100;
+    --created: #ff57cf;
+    --open-space: #80ff00;
+    --road-fill: #4a4434; --road-case: #0f0d09; --road-major: #c6bfae; --building: #d9d1be;
   --map-ground: #16140f;
   --map-line: #514938;
 }
@@ -169,6 +178,7 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #legend .note { color: var(--ink-muted); margin-top: 5px; }
 #legend .pl { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
 #legend .pl i { width: 11px; height: 11px; border-radius: 2px; flex: none; }
+#legend .pl i.ol { width: 9px; height: 9px; background: transparent; border: 2px solid; }
 
 #layers {
   position: absolute; right: 10px; top: 10px; z-index: 3;
@@ -199,6 +209,15 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #parcelinfo .x { float: right; cursor: pointer; color: var(--ink-muted); }
 
 #panel { overflow-y: auto; padding: 12px 14px 28px; display: flex; flex-direction: column; gap: 16px; }
+/* The About view is prose: one column, the map and filters stepping aside. */
+body.about main { grid-template-columns: 1fr; }
+body.about #mapwrap, body.about #filters { display: none; }
+body.about #panel { max-width: 860px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.about { font-size: 13px; line-height: 1.55; color: var(--ink-1); }
+.about p { margin: 0 0 9px; }
+.about ul { margin: 2px 0 8px 18px; padding: 0; }
+.about li { margin: 4px 0; }
+.about a { color: var(--ui); }
 .card { background: var(--surface-1); border: 1px solid var(--grid); border-radius: 9px; padding: 11px 12px; }
 .card > h3 { margin-bottom: 2px; }
 .card .cap { font-size: 11.5px; color: var(--ink-2); margin: 2px 0 8px; }
