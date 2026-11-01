@@ -27,6 +27,7 @@ const DATA = [
   'reservations.geojson', 'publiclands.geojson', 'cities.geojson', 'highways.geojson',
   'lidar_coverage.geojson',
   'holdings_county.parquet', 'holdings_top.parquet', 'holdings_review.parquet',
+  'threshold_edges.parquet', 'county_size_histogram.parquet', 'regression_table1.parquet',
 ];
 
 console.log(`\nsmoke: ${BASE}\n`);
@@ -85,7 +86,8 @@ const subText = await page.$eval('#sub', (e) => e.textContent.trim());
 ok('header reports the series', /29 vintages/.test(subText), subText);
 
 const views = await page.$$eval('#nav button', (bs) => bs.map((b) => b.textContent.trim()));
-ok('all eight views present, About last', views.length === 8 && views[7] === 'About', views.join(', '));
+ok('all nine views present, Reports then About last',
+  views.length === 9 && views[7] === 'Reports' && views[8] === 'About', views.join(', '));
 
 // Map rendered something.
 const canvas = await page.$('#map canvas');
@@ -102,9 +104,10 @@ ok('legend is populated with a ramp', legendHtml.includes('class="ramp"'));
 ok('legend states the mask meaning', /no comparable data/i.test(legendHtml));
 
 // Each chart view renders at least one chart, and populated -- not merely
-// present. About is prose and has its own checks further down.
+// present. About is prose and Reports composes on request; both have their
+// own checks further down.
 for (let i = 0; i < views.length; i++) {
-  if (views[i] === 'About') continue;
+  if (views[i] === 'About' || views[i] === 'Reports') continue;
   await page.evaluate((n) => document.querySelectorAll('#nav button')[n].click(), i);
   await new Promise((r) => setTimeout(r, 1800));
   const info = await page.evaluate(() => {
@@ -205,6 +208,70 @@ const back = await page.evaluate(() => ({
   mapShown: document.getElementById('mapwrap').offsetHeight > 0,
   canvas: window.__map.map.getCanvas().width > 0 }));
 ok('leaving About restores the map', back.mapShown && back.canvas, JSON.stringify(back));
+
+// The Reports view: five documents composed from the same tables and printed
+// to PDF by the browser. Each must compose without error and carry its
+// sections; the worksheet must be a CSV shaped for owner_overrides.csv; and
+// the print path (the same one Save as PDF uses) must yield a real PDF.
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Reports') b.click(); });
+await new Promise((r) => setTimeout(r, 800));
+const rform = await page.evaluate(() => ({
+  kinds: [...document.querySelectorAll('#rpt-kind option')].map((o) => o.value),
+  county: !!document.getElementById('rpt-county'), go: !!document.getElementById('rpt-go'),
+  mapHidden: document.getElementById('mapwrap').offsetHeight === 0 }));
+ok('Reports view offers the five reports', rform.kinds.length === 5 && rform.county && rform.go && rform.mapHidden, JSON.stringify(rform));
+const compose = async (kind, county) => {
+  await page.evaluate((k, c) => {
+    const s = document.getElementById('rpt-kind'); s.value = k; s.dispatchEvent(new Event('change'));
+    if (c != null) { const cs = document.getElementById('rpt-county'); cs.value = c; cs.dispatchEvent(new Event('change')); }
+    window.__report = null;
+    document.getElementById('rpt-go').click();
+  }, kind, county);
+  for (let i = 0; i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    if (await page.evaluate(() => !!window.__report)) break;
+  }
+  return page.evaluate(() => {
+    const r = document.getElementById('report');
+    const out = window.__report || {};
+    return { title: out.title || '', rows: out.rows || 0, csvHead: (out.csv || '').split('\r\n')[0],
+      csvLines: out.csv ? out.csv.split('\r\n').length - 1 : 0,
+      secs: r ? r.querySelectorAll('.rsec').length : 0, svgs: r ? r.querySelectorAll('svg').length : 0,
+      tableRows: r ? [...r.querySelectorAll('.tablewrap table.data')].map((t) => t.tBodies[0].rows.length) : [],
+      dashes: r ? [...r.querySelectorAll('.stat .v')].filter((e) => e.textContent === '--').length : 0,
+      width: r ? Math.round(r.getBoundingClientRect().width) : 0,
+      pdfBtn: !document.getElementById('rpt-pdf').hidden, csvBtn: !document.getElementById('rpt-csv').hidden };
+  });
+};
+const prof = await compose('profile', '6');
+ok('county profile composes every section with populated tiles',
+  /Gallatin/.test(prof.title) && prof.secs >= 13 && prof.svgs >= 14 && prof.dashes === 0 && prof.pdfBtn && prof.width === 816,
+  JSON.stringify(prof));
+const trnd = await compose('trends', null);
+ok('statewide trends brief is chart-led and dated', /2026|20\d\d/.test(trnd.title) && trnd.svgs >= 8 && trnd.dashes === 0, JSON.stringify(trnd));
+const hold = await compose('holdings', null);
+ok('large-holdings update carries Table 1 for every county, the four largest per county, and the residuals',
+  hold.tableRows[0] === 57 && hold.tableRows[1] >= 200 && hold.tableRows.filter((n) => n === 14).length === 2 && hold.svgs >= 2,
+  JSON.stringify(hold.tableRows));
+const wks = await compose('worksheet', '');
+ok('review worksheet is a CSV shaped for owner_overrides.csv',
+  wks.csvHead.startsWith('override_action,source_owner_id,target_owner_group_id,PartyID,PARCELID,PropertyID,CountyPrefix,TaxYear,reason,reviewer,review_date,')
+    && wks.rows > 50 && wks.csvLines === wks.rows + 1 && wks.tableRows[0] === wks.rows && wks.csvBtn,
+  JSON.stringify({ head: wks.csvHead.slice(0, 60), rows: wks.rows, lines: wks.csvLines, csvBtn: wks.csvBtn }));
+const act = await compose('activity', null);
+ok('subdivision activity report tables every county for the period',
+  /\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}/.test(act.title) && act.tableRows.includes(56) && act.svgs >= 3, JSON.stringify(act));
+// The PDF comes from the browser's print engine, through the same stylesheet
+// the Save-as-PDF button uses; Letter, several pages, and only the report.
+// page.pdf() returns a Uint8Array, whose toString is a list of numbers.
+const pdfBuf = Buffer.from(await page.pdf({ format: 'Letter', printBackground: true, preferCSSPageSize: true }));
+const pdfTxt = pdfBuf.toString('latin1');
+const pdfPages = (pdfTxt.match(/\/Type\s*\/Page[^s]/g) || []).length;
+ok('report prints to a multi-page PDF through the browser',
+  pdfBuf.length > 50000 && pdfTxt.startsWith('%PDF-') && pdfPages >= 3,
+  JSON.stringify({ bytes: pdfBuf.length, pages: pdfPages }));
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await new Promise((r) => setTimeout(r, 2500));
 
 // First-party reference layers: roads from the same tiles, named from the
 // vendored glyphs, and buildings where lidar has flown. Nothing is fetched

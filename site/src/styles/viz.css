@@ -209,10 +209,11 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #parcelinfo .x { float: right; cursor: pointer; color: var(--ink-muted); }
 
 #panel { overflow-y: auto; padding: 12px 14px 28px; display: flex; flex-direction: column; gap: 16px; }
-/* The About view is prose: one column, the map and filters stepping aside. */
-body.about main { grid-template-columns: 1fr; }
-body.about #mapwrap, body.about #filters { display: none; }
-body.about #panel { max-width: 860px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+/* The About view is prose and the Reports view is paper: one column, the map
+   and filters stepping aside. */
+body.full main { grid-template-columns: 1fr; }
+body.full #mapwrap, body.full #filters { display: none; }
+body.full #panel { max-width: 900px; width: 100%; margin: 0 auto; box-sizing: border-box; }
 .about { font-size: 13px; line-height: 1.55; color: var(--ink-1); }
 .about p { margin: 0 0 9px; }
 .about ul { margin: 2px 0 8px 18px; padding: 0; }
@@ -236,7 +237,12 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 svg text { fill: var(--ink-2); font-size: 10.5px; }
 svg .grid line { stroke: var(--grid); stroke-width: 1; }
 svg .axis line, svg .axis path { stroke: var(--axis); stroke-width: 1; }
-svg .lab-direct { fill: var(--ink-1); font-size: 10.5px; font-weight: 600; }
+/* A halo in the surface colour keeps a direct label legible on a dark fill
+   (the top band of a stacked area) and where it crosses its own line. */
+svg .lab-direct {
+  fill: var(--ink-1); font-size: 10.5px; font-weight: 600;
+  paint-order: stroke; stroke: var(--surface-1); stroke-width: 2.5px; stroke-linejoin: round;
+}
 svg .hit { fill: transparent; cursor: crosshair; }
 svg .crosshair { stroke: var(--ink-muted); stroke-width: 1; stroke-dasharray: 3 3; }
 svg .refline { stroke: var(--statute); stroke-width: 2; }
@@ -272,3 +278,89 @@ details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink
 .tablewrap table.data th, .tablewrap table.data td { padding: 3px 6px; border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
 .tablewrap table.data th { color: var(--ink-2); font-weight: 650; }
 .badge { display: inline-block; font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--axis); border-radius: 9px; color: var(--ink-2); white-space: nowrap; }
+
+/* ---------------------------------------------------------------- reports */
+.rform { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; margin-top: 6px; }
+.rform label { display: flex; gap: 6px; align-items: center; color: var(--ink-2); }
+.rform select {
+  font: inherit; background: var(--surface-1); color: var(--ink-1);
+  border: 1px solid var(--axis); border-radius: 5px; padding: 3px 6px; max-width: 220px;
+}
+.rform button, .rform a {
+  font: inherit; font-size: 12.5px; padding: 4px 12px; cursor: pointer; text-decoration: none;
+  border: 1px solid var(--ui); border-radius: 6px; background: var(--ui); color: var(--ui-ink);
+}
+.rform button.secondary, .rform a { background: var(--surface-1); color: var(--ui); }
+.rform [hidden] { display: none !important; }
+
+/* The report is paper. It declares the light palette on itself so that its
+   charts (which read colours from it at render time) and its text print on
+   white whatever the page theme, and it is laid out at Letter width on screen
+   so that what is previewed is what prints: the charts size themselves to
+   their container, and a container that changed width between the preview
+   and the print would stretch their text. */
+.report {
+  color-scheme: light;
+  --surface-1: #ffffff; --page: #ffffff;
+  --ink-1: #1a1712; --ink-2: #575144; --ink-muted: #6d6861;
+  --grid: #e6dfcf; --axis: #c9c0aa;
+  --cat-1: #078661; --cat-2: #b18e15; --cat-3: #3e54b1;
+  --ord5-1: #bf9d86; --ord5-2: #b3774d; --ord5-3: #9c561d; --ord5-4: #753f12; --ord5-5: #4a2e1a;
+  --ord3-1: #ba967f; --ord3-2: #9c5313; --ord3-3: #4d301b;
+  --seq-1: #c4a38e; --seq-2: #bb8b6a; --seq-3: #af744a; --seq-4: #a05e2c;
+  --seq-5: #8b4b16; --seq-6: #733c0f; --seq-7: #59300f; --seq-8: #3e2412;
+  --statute: #af3c3a; --ui: #04665e; --masked: #ddd6c4;
+  --public-land: #2b7a4b; --open-space: #80ff00; --created: #c4188f;
+  width: 8.5in; max-width: 100%; margin: 0 auto; padding: 0.6in 0.75in; box-sizing: border-box;
+  background: #fff; color: var(--ink-1); font-size: 12px; line-height: 1.45;
+  border: 1px solid var(--grid); box-shadow: 0 2px 12px rgba(0,0,0,.08);
+}
+.report .mast { border-bottom: 2px solid var(--ink-1); padding-bottom: 8px; margin-bottom: 14px; }
+.report .eyebrow { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-2); }
+.report h1 { font-size: 22px; font-weight: 650; margin: 2px 0 4px; letter-spacing: -0.01em; }
+.report .scope { font-size: 12.5px; color: var(--ink-2); }
+.report .meta { font-size: 10.5px; color: var(--ink-muted); margin-top: 3px; }
+.report .rsec { margin: 0 0 16px; }
+/* A page may break between the pieces of a section but never inside one:
+   each chart, stat row or table stays whole, and a heading stays with what
+   follows it. Only a long table (every county, every flagged holding) may
+   run across pages, with its header row repeated. */
+.report .rsec > * { break-inside: avoid; page-break-inside: avoid; }
+.report .rsec.long > .tablewrap { break-inside: auto; page-break-inside: auto; }
+.report h2 {
+  font-size: 13.5px; font-weight: 650; color: var(--ink-1); text-transform: none; letter-spacing: 0;
+  margin: 0 0 2px; border-top: 1px solid var(--grid); padding-top: 8px; break-after: avoid; page-break-after: avoid;
+}
+.report .cap { font-size: 11px; color: var(--ink-2); margin: 2px 0 8px; break-after: avoid; page-break-after: avoid; }
+.report code { font-size: 9.5px; white-space: nowrap; }
+.report .blank { display: inline-block; width: 66px; height: 11px; border-bottom: 1px solid var(--axis); }
+.report .rnote { font-size: 10.5px; color: var(--ink-2); margin-top: 6px; }
+.report .rprose { font-size: 12px; }
+.report .rprose p { margin: 0 0 8px; }
+.report .rprose code { font-size: 11px; }
+.report .rcaveats { font-size: 10px; color: var(--ink-2); }
+.report .rcaveats ul { margin: 0 0 6px 16px; padding: 0; }
+.report .rcaveats li { margin: 2px 0; }
+.report .rcaveats p { margin: 0; }
+.report .stats { gap: 14px 22px; margin-bottom: 4px; }
+.report .stat .v { font-size: 18px; }
+.report .rgrid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
+.report .tablewrap { overflow: visible; margin-top: 4px; }
+.report .tablewrap table.data { font-size: 10px; }
+.report .tablewrap table.data th, .report .tablewrap table.data td { padding: 2px 5px; }
+.report table.data thead { display: table-header-group; }
+.report tr { break-inside: avoid; }
+.report details.tableview { display: none; }
+.report .legend-row { font-size: 10.5px; }
+.report svg .hit { cursor: default; }
+
+/* Print: only the report, at the page's own width. */
+@page { size: letter; margin: 0.6in 0.75in 0.7in; }
+@media print {
+  html, body { background: #fff !important; height: auto; }
+  #app { display: block; height: auto; }
+  header, #filters, #mapwrap, #legend, .no-print, .tip { display: none !important; }
+  main { display: block; }
+  #panel { display: block; overflow: visible; padding: 0; max-width: none; margin: 0; }
+  .report { width: auto; max-width: none; padding: 0; margin: 0; border: 0; box-shadow: none; }
+}

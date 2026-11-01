@@ -16,6 +16,7 @@
 import { loadJSON, loadTable, cube, flowCube, seriesOf, sumAt, valuesAt } from './data.js';
 import { UnitMap, quantileBreaks, classify } from './map.js';
 import * as C from './charts.js';
+import { REPORTS, renderReport } from './reports.js';
 
 const S = {
   dim: null, meta: null, map: null,
@@ -23,6 +24,10 @@ const S = {
   maskLow: true, selection: new Set(), originState: '',
   twpByKey: new Map(), twpById: new Map(),
   cubes: {}, flows: {}, nSnaps: 0, nTwp: 0, nIv: 0,
+  // The Reports view: which document, for which county or period, and
+  // whether one has been composed (so a re-render redraws it).
+  report: { kind: 'profile', county: 6, a: 0, b: 0, generated: false },
+  reportGen: 0, reportOut: null,
 };
 const $ = (id) => document.getElementById(id);
 
@@ -1076,12 +1081,134 @@ function selectionNote() {
 }
 
 
-/* 8. About -- how to use it, how to read it, where it comes from */
+/* 8. Reports -- the five printable documents, composed in reports.js */
+VIEWS.reports = {
+  label: 'Reports',
+  legend: 'Reports',
+  full: true,
+  async render(panel) {
+    reportForm(panel);
+    if (S.report.generated) await generateReport();
+  },
+};
+
+const reportCtx = () => ({
+  dim: S.dim, meta: S.meta, nSnaps: S.nSnaps, nIv: S.nIv,
+  countyCube, countyFlow, holdingsCube, loadTable,
+  countyName: (code) => S.dim.counties.find((c) => c.code === code)?.name ?? String(code),
+});
+
+function reportForm(panel) {
+  const card = C.card(panel, 'Generate a report');
+  card.classList.add('no-print');
+  const counties = S.dim.counties.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const snaps = S.dim.snapshots;
+  const opt = (v, label, sel) => `<option value="${v}"${sel ? ' selected' : ''}>${label}</option>`;
+  const r = S.report;
+  card.insertAdjacentHTML('beforeend', `
+    <div class="rform">
+      <label>Report <select id="rpt-kind">${Object.entries(REPORTS).map(([k, v]) => opt(k, v.label, k === r.kind)).join('')}</select></label>
+      <label id="rpt-county-wrap">County <select id="rpt-county">${opt('', 'all counties', !r.county)}${counties.map((c) => opt(c.code, c.name, c.code === r.county)).join('')}</select></label>
+      <span id="rpt-period-wrap" style="display:contents">
+        <label>From <select id="rpt-a">${snaps.map((sn, i) => opt(i, sn.date, i === r.a)).join('')}</select></label>
+        <label>To <select id="rpt-b">${snaps.map((sn, i) => opt(i, sn.date, i === r.b)).join('')}</select></label>
+      </span>
+      <button id="rpt-go">Generate</button>
+      <button id="rpt-pdf" class="secondary" hidden>Save as PDF</button>
+      <a id="rpt-csv" hidden>Download CSV</a>
+    </div>
+    <div class="cap" id="rpt-blurb" style="margin-top:8px"></div>
+    <div class="hint" id="rpt-status" style="font-size:11.5px;color:var(--ink-muted)"></div>`);
+  const sync = () => {
+    const k = $('rpt-kind').value;
+    const needs = REPORTS[k].needs;
+    $('rpt-county-wrap').hidden = !(needs.includes('county') || needs.includes('county-optional'));
+    $('rpt-period-wrap').hidden = !needs.includes('period');
+    // The profile is one county; only the worksheet can take them all.
+    const all = $('rpt-county').options[0];
+    all.hidden = !needs.includes('county-optional');
+    if (needs.includes('county') && !$('rpt-county').value) {
+      const fromMap = S.level === 'county' && S.selection.size ? Array.from(S.selection)[0] : null;
+      $('rpt-county').value = String(fromMap ?? 6);
+    }
+    $('rpt-blurb').textContent = REPORTS[k].blurb;
+    $('rpt-pdf').hidden = !(S.report.generated && S.reportOut && S.report.kind === k);
+    $('rpt-csv').hidden = !(S.report.generated && S.reportOut?.csv && S.report.kind === k);
+  };
+  $('rpt-kind').addEventListener('change', () => { S.report.kind = $('rpt-kind').value; sync(); });
+  $('rpt-county').addEventListener('change', () => { S.report.county = Number($('rpt-county').value) || null; });
+  $('rpt-a').addEventListener('change', () => { S.report.a = Number($('rpt-a').value); });
+  $('rpt-b').addEventListener('change', () => { S.report.b = Number($('rpt-b').value); });
+  $('rpt-go').addEventListener('click', () => {
+    S.report.kind = $('rpt-kind').value;
+    S.report.county = Number($('rpt-county').value) || null;
+    S.report.generated = true;
+    generateReport();
+  });
+  $('rpt-pdf').addEventListener('click', printReport);
+  sync();
+}
+
+async function generateReport() {
+  const panel = $('panel');
+  let host = $('report');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'report';
+    host.className = 'report';
+    panel.appendChild(host);
+  }
+  const { kind, county, a, b } = S.report;
+  const status = $('rpt-status');
+  if (kind === 'activity' && !(a < b)) {
+    status.textContent = 'The period must run from an earlier vintage to a later one.';
+    return;
+  }
+  const params = kind === 'profile' ? { county: county || 6 }
+    : kind === 'worksheet' ? { county: county || null }
+    : kind === 'activity' ? { a, b } : {};
+  const gen = ++S.reportGen;
+  status.textContent = 'Composing\u2026';
+  $('rpt-pdf').hidden = true;
+  $('rpt-csv').hidden = true;
+  try {
+    const out = await renderReport(kind, params, host, reportCtx());
+    if (gen !== S.reportGen) return;   // superseded by a later request
+    S.reportOut = out;
+    $('rpt-pdf').hidden = false;
+    const csvA = $('rpt-csv');
+    if (out.csv) {
+      if (csvA.href) URL.revokeObjectURL(csvA.href);
+      csvA.href = URL.createObjectURL(new Blob([out.csv], { type: 'text/csv' }));
+      csvA.download = out.csvName;
+      csvA.hidden = false;
+    }
+    status.textContent = `${out.title}${out.csv ? ` \u00b7 ${out.rows} rows in the CSV` : ''}. `
+      + 'Save as PDF opens the browser\u2019s print dialog; choose \u201cSave as PDF\u201d as the destination. '
+      + 'The page is composed for Letter paper.';
+    // Test handle: the smoke suite reads the composed report through this.
+    window.__report = out;
+  } catch (err) {
+    console.error(err);
+    status.textContent = `Could not compose the report: ${err && err.message ? err.message : err}`;
+  }
+}
+
+/** The PDF is the browser's: the print stylesheet keeps only the report, and
+ *  the document title becomes the file name the dialog proposes. */
+function printReport() {
+  const was = document.title;
+  document.title = (S.reportOut?.title || 'report').replace(/[^\w .,-]+/g, '');
+  window.addEventListener('afterprint', () => { document.title = was; }, { once: true });
+  window.print();
+}
+
+/* 9. About -- how to use it, how to read it, where it comes from */
 const CONTACT_URL = 'https://www.epistemegeospatial.com/contact';
 VIEWS.about = {
   label: 'About',
   legend: 'About this dashboard',
-  about: true,
+  full: true,
   async render(panel) {
     const first = S.dim.snapshots[0].date, last = S.dim.snapshots[S.nSnaps - 1].date;
     const section = (title, html) => {
@@ -1123,6 +1250,10 @@ VIEWS.about = {
         <li><strong>Layers</strong> adds the township grid, county boundaries, roads with their names, building
           footprints where lidar has flown, reservations, public lands and city limits. The basemap is outlines only;
           an OpenStreetMap basemap can be switched on, and only then does the page fetch anything from a third party.</li>
+        <li><strong>Reports</strong> composes a printable document from the same tables: a county profile, a
+          statewide trends brief, a large-holdings update in the form of the paper, a review worksheet as a CSV, and a
+          subdivision-activity report for a chosen period. <em>Save as PDF</em> hands the page to the browser’s print
+          dialog, where “Save as PDF” is the destination; nothing leaves the browser.</li>
         <li>The <strong>◐</strong> button toggles light and dark.</li>
       </ul>`);
 
@@ -1221,7 +1352,7 @@ async function render() {
     const c = C.card(panel, 'Could not render this view');
     c.appendChild(document.createTextNode(String(err && err.message ? err.message : err)));
   }
-  if (!VIEWS[S.view].about) caveatCard(panel);
+  if (!VIEWS[S.view].full) caveatCard(panel);
 }
 
 function caveatCard(panel) {
@@ -1250,10 +1381,10 @@ function buildControls() {
       $('erawrap').hidden = k !== 'thresholds';
       $('originwrap').hidden = k !== 'ownership';
       $('level').disabled = (k === 'holdings' || k === 'review');
-      // About is prose: the map and filters step aside, and the map is told
-      // its size again when they come back.
-      document.body.classList.toggle('about', k === 'about');
-      if (k !== 'about' && S.map) setTimeout(() => S.map.map.resize(), 0);
+      // About is prose and Reports is paper: the map and filters step aside,
+      // and the map is told its size again when they come back.
+      document.body.classList.toggle('full', !!VIEWS[k].full);
+      if (!VIEWS[k].full && S.map) setTimeout(() => S.map.map.resize(), 0);
       render();
     });
     nav.appendChild(b);
@@ -1357,6 +1488,9 @@ export async function boot() {
   S.nSnaps = dim.snapshots.length;
   S.nIv = dim.intervals.length;
   S.nTwp = dim.townships.length;
+  // The activity report defaults to the last five years or so of the series.
+  S.report.a = Math.max(0, S.nSnaps - 6);
+  S.report.b = S.nSnaps - 1;
   for (const t of dim.townships) { S.twpByKey.set(t.tr, t); S.twpById.set(t.id, t); }
 
   $('boot').remove();

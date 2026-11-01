@@ -221,6 +221,8 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
     # ---- planning analytics
     for name, src in (("absorption", "absorption.parquet"),
                       ("size_histogram", "size_histogram.parquet"),
+                      ("threshold_edges", "threshold_edges.parquet"),
+                      ("county_size_histogram", "county_size_histogram.parquet"),
                       ("dormant", "dormant.parquet"),
                       ("dormant_by_size", "dormant_by_size.parquet")):
         p = os.path.join(LADDER_DIR, src)
@@ -277,6 +279,19 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
         rg_path = os.path.join(FACT_DIR, "regression_table1.csv")
         if os.path.exists(rg_path):
             rg = pd.read_csv(rg_path)
+            # The per-county cells too, so the large-holdings report can show
+            # the residual county by county rather than only the 13-county sum.
+            name_to_code = {v[0]: k for k, v in COUNTY_PREFIX.items()}
+            rt = rg.copy()
+            rt["county_n"] = rt["county"].map(name_to_code)
+            rt["s"] = rt["snapshot"].map(snap_id)
+            rt = rt[rt["county_n"].notna() & rt["s"].notna()].copy()
+            rt["county_n"] = rt["county_n"].astype("int16")
+            rt["s"] = rt["s"].astype("int8")
+            files["regression_table1"] = _write(
+                rt[["county_n", "s", "T1_large_acres", "doc_large_acres", "max_large_acres",
+                    "T1_owners", "doc_owners", "max_owners", "T1_mean", "doc_mean", "clo4"]],
+                os.path.join(out_dir, "regression_table1.parquet"))
             hold_meta["regression"] = [
                 {"snapshot": d, "counties": int(len(g)),
                  "paper_large_acres": float(g["T1_large_acres"].sum()),

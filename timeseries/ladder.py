@@ -117,11 +117,18 @@ def absorption(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR) -> pd.DataF
     return out
 
 
-def thresholds(event_dir: str = EVENT_DIR) -> tuple[pd.DataFrame, dict]:
+def thresholds(event_dir: str = EVENT_DIR) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
     """Size distribution of newly created parcels, with the statutory edges tested.
 
     ``first_mapping`` events are excluded: those are parcels arriving with
     coverage, not divisions of land, and they would blur the signal.
+
+    Returns the statewide histogram by interval, its QA, and two county
+    tables the reports draw on: the counts just below and just above each
+    statutory edge per county and interval (``threshold_edges``), and the
+    county's all-time histogram (``county_size_histogram``). The per-county,
+    per-interval histogram would be a quarter of a million rows for a chart
+    nobody reads at that grain; the edge windows are what the question needs.
     """
     frames = []
     for path in sorted(glob.glob(os.path.join(event_dir, "events_*.parquet"))):
@@ -146,15 +153,33 @@ def thresholds(event_dir: str = EVENT_DIR) -> tuple[pd.DataFrame, dict]:
 
     # The direct test: mass just below an edge against mass just above it.
     tests = {}
+    agg = {"lots": ("acres", "size")}
     for edge in STATUTORY_EDGES:
         w = max(1.0, edge * 0.03)      # a 3% window either side
-        below = int(((ev["acres"] >= edge - w) & (ev["acres"] < edge)).sum())
-        above = int(((ev["acres"] >= edge) & (ev["acres"] < edge + w)).sum())
+        b = (ev["acres"] >= edge - w) & (ev["acres"] < edge)
+        a = (ev["acres"] >= edge) & (ev["acres"] < edge + w)
+        below, above = int(b.sum()), int(a.sum())
         tests[f"{edge:g}_acre_edge"] = {
             "window_acres": round(w, 2),
             "just_below": below, "just_above": above,
             "above_over_below": round(above / max(1, below), 4),
         }
+        ev[f"below{edge:g}"] = b.astype("int32")
+        ev[f"above{edge:g}"] = a.astype("int32")
+        agg[f"below{edge:g}"] = (f"below{edge:g}", "sum")
+        agg[f"above{edge:g}"] = (f"above{edge:g}", "sum")
+    # Land divisions only for the per-county lot count: a condominium unit is
+    # housing inside an existing lot, never a division of land.
+    land = ev[ev["event_class"].isin(["lot_created", "block_created"])]
+    edges = (land[land["county_n"].notna()]
+             .groupby(["county_n", "interval"]).agg(**agg).reset_index())
+    edges["county_n"] = edges["county_n"].astype("int16")
+    chist = (ev[ev["county_n"].notna()].groupby(["county_n", "bin"], observed=True)
+             .agg(parcels=("acres", "size")).reset_index())
+    chist["bin_lo"] = chist["bin"].apply(lambda b: float(b.left))
+    chist["bin_hi"] = chist["bin"].apply(lambda b: float(b.right))
+    chist = chist.drop(columns=["bin"])
+    chist["county_n"] = chist["county_n"].astype("int16")
     era = {}
     for lo, hi, lab in ((0, 11, "2003-2010"), (11, 20, "2011-2019"), (20, 28, "2020-2026")):
         sub = ev[(ev["interval"] >= lo) & (ev["interval"] < hi)]
@@ -168,8 +193,9 @@ def thresholds(event_dir: str = EVENT_DIR) -> tuple[pd.DataFrame, dict]:
     qa = {"events_scored": int(len(ev)),
           "note": "first_mapping excluded: coverage arriving, not land divided",
           "edge_tests": tests, "by_era": era,
-          "pct_under_160_acres": round(100.0 * float((ev["acres"] < 160).mean()), 3)}
-    return hist, qa
+          "pct_under_160_acres": round(100.0 * float((ev["acres"] < 160).mean()), 3),
+          "county_edges_rows": int(len(edges)), "county_histogram_rows": int(len(chist))}
+    return hist, qa, edges, chist
 
 
 def dormant(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR,
@@ -237,8 +263,10 @@ def main(argv: list[str] | None = None) -> int:
     ab.to_parquet(os.path.join(args.out, "absorption.parquet"), index=False, compression="zstd")
 
     log.info("regulatory thresholds")
-    hist, tqa = thresholds(args.event_dir)
+    hist, tqa, edges, chist = thresholds(args.event_dir)
     hist.to_parquet(os.path.join(args.out, "size_histogram.parquet"), index=False, compression="zstd")
+    edges.to_parquet(os.path.join(args.out, "threshold_edges.parquet"), index=False, compression="zstd")
+    chist.to_parquet(os.path.join(args.out, "county_size_histogram.parquet"), index=False, compression="zstd")
 
     log.info("dormant inventory")
     dm, by_size = dormant(args.snap_dir, args.event_dir)

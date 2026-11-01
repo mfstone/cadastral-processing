@@ -32,8 +32,13 @@ function el(name, attrs = {}, parent = null) {
   return n;
 }
 
+// Colours are read from the document root, or from a palette root set for
+// the duration of a render: a printed report is paper and declares the light
+// tokens on itself, so its charts must read from it whatever the page theme.
+let paletteRoot = null;
+export function setPaletteRoot(el) { paletteRoot = el; }
 export function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return getComputedStyle(paletteRoot || document.documentElement).getPropertyValue(name).trim();
 }
 export function ramp(prefix, n) {
   return Array.from({ length: n }, (_, i) => cssVar(`--${prefix}-${i + 1}`));
@@ -269,14 +274,23 @@ export function lineChart(host, {
     }
     el('path', { d, fill: 'none', stroke: colors[j], 'stroke-width': 2,
       'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.svg);
-    if (series.length <= 4 && n) {
-      const last = n - 1;
-      if (isFinite(s[last])) {
-        const t = el('text', { x: X(last) - 3, y: Y(s[last]) - 6, 'text-anchor': 'end', class: 'lab-direct' }, f.svg);
-        t.textContent = labels[j];
-      }
-    }
   });
+  // Direct labels on the last point, pushed apart where two series end
+  // close together (the document and maximal tiers often do): a label on top
+  // of another is no label at all.
+  if (series.length <= 4 && n) {
+    const last = n - 1;
+    const labs = series.map((s, j) => ({ j, y: isFinite(s[last]) ? Y(s[last]) - 6 : NaN }))
+      .filter((l) => isFinite(l.y)).sort((a, b) => a.y - b.y);
+    const gap = 11;
+    for (let i = 1; i < labs.length; i++) if (labs[i].y - labs[i - 1].y < gap) labs[i].y = labs[i - 1].y + gap;
+    const over = labs.length ? labs[labs.length - 1].y - (f.y1 - 2) : 0;
+    if (over > 0) for (const l of labs) l.y -= over;
+    for (const l of labs) {
+      const t = el('text', { x: X(last) - 3, y: l.y, 'text-anchor': 'end', class: 'lab-direct' }, f.svg);
+      t.textContent = labels[l.j];
+    }
+  }
   xTicks(f.svg, f, xLabels);
 
   const ch = el('line', { class: 'crosshair', y1: f.y0, y2: f.y1, x1: -99, x2: -99 }, f.svg);
@@ -356,7 +370,8 @@ export function rankBars(host, { items, color, fmt = fmtInt, caption, max: given
   const wrap = document.createElement('div');
   host.appendChild(wrap);
   const rowH = 19;
-  const f = frame(wrap, { height: Math.max(40, items.length * rowH + 10), padL: 112, padB: 6, padT: 4 });
+  // Room on the right for the value label of the longest bar.
+  const f = frame(wrap, { height: Math.max(40, items.length * rowH + 10), padL: 112, padR: 44, padB: 6, padT: 4 });
   const max = givenMax || niceMax(finiteMax(items.map((d) => d.value)));
   const fill = color || cssVar('--cat-1');
   items.forEach((d, i) => {

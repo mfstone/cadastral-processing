@@ -578,3 +578,72 @@ dormant inventory is measured on the latest vintage, and the absorption
 cohorts never read a stage from it, so nothing published rests on it; the
 share-of-platted-lots figure for that vintage is null in the QA rather than
 wrong.
+
+## 18. Reports are composed where the data is, and printed by the browser
+
+The dashboard is static files on Cloudflare Pages, so there is no server to
+render a PDF on, and a build-time batch (56 county profiles, a brief, an
+update, 28 periods) would be stale the moment someone wanted a period the
+batch did not cover. The five reports are therefore composed in the page from
+the published tables (the same cubes the views read, with the county or
+period as an explicit argument instead of the map selection), laid out as a
+Letter document, and handed to the browser's print engine; "Save as PDF" is
+the print dialog's destination. Puppeteer's `page.pdf()` drives the same path,
+which is how the smoke suite checks the output and how the page counts below
+were measured.
+
+Two things had to be true for the printed page to match the preview:
+
+- **The report is paper.** It declares the light palette on itself and the
+  charts read their colours from it (`setPaletteRoot`) for the duration of the
+  render, so a report generated in the dark theme still prints on white. The
+  chart body bakes hex values into the SVG at render time, which is why a CSS
+  override alone was not enough.
+- **The preview is laid out at print width.** The charts size themselves to
+  their container and stretch non-uniformly (`preserveAspectRatio: none`) if
+  it changes, so the on-screen page is 8.5 in with 0.6/0.75 in padding and the
+  `@page` margins are the same: 7 in of content either way, and the text in a
+  chart is the same width on screen and on paper.
+
+Page breaks fall between the pieces of a section (each chart, stat row or
+table stays whole, a heading stays with what follows) rather than around whole
+sections: the first cut kept sections whole and left pages two-thirds blank.
+Only the long tables (every county, every flagged holding) may run across
+pages, with the header row repeated.
+
+Two tables were published for the reports that no view had needed:
+
+- `threshold_edges` (county × interval): parcels created by land division,
+  and the counts just below and just above the 20-, 40- and 160-acre lines in
+  the 3% windows the statewide test uses. 1,432 rows, 12 KB. The per-county,
+  per-interval histogram would have been a quarter of a million rows for a
+  chart nobody reads at that grain; the edge windows are what the question
+  needs. `county_size_histogram` carries the county's all-time bins (6,675
+  rows, 14 KB) for the profile's chart. Condominium units are excluded from
+  the lot counts here (a unit is housing inside an existing lot, not a
+  division of land), so a county's edge counts sum to slightly less than the
+  statewide test in `meta.json`, which scores every non-first-mapping event.
+- `regression_table1` (13 counties × 4 snapshots): the per-county cells of
+  the Table 1 regression, so the large-holdings update can show the residual
+  county by county rather than only the 13-county sums already in `meta.json`.
+
+Measured on the 2026-09-04 publish (Letter, Chrome's print engine):
+
+| report | pages | bytes | what it carries |
+|---|---|---|---|
+| county profile (Gallatin) | 8 | 289 KB | 14 sections, 15 charts, four tables |
+| statewide trends brief | 4 | 167 KB | 9 charts |
+| large-holdings update | 10 | 896 KB | Table 1 (56 counties + state), 224 largest holdings, CLO4 ranked, 26 residual rows |
+| review worksheet, all counties | 15 | 1.1 MB | 266 flagged holdings; the CSV is 51 KB |
+| subdivision activity, 2021-12-31 to 2026-09-04 | 4 | 363 KB | 56-county table, two ranked charts, period histogram |
+
+`npm run reports:pdf` (scripts/shot-reports.mjs) batch-produces all five
+against a running preview, for checking a publish or for handing out.
+
+The worksheet is the one report that changes the numbers. Its CSV carries the
+columns of `owner_overrides.csv` first, with `source_owner_id` already set to
+the holding's group hash and `CountyPrefix` to the county code, then the
+context a reviewer needs; filled rows append to the overrides file unchanged,
+and rows with no action are ignored by `identity.load_overrides`. It covers
+the flagged holdings among the ten largest per county, because that is what
+is published; the complete queue is written locally by the identity stage.

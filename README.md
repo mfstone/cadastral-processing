@@ -137,6 +137,7 @@ view as a range between the document tier and the maximal tier.
 | `timeseries/holdings.py` | large-holding and concentration metrics |
 | `timeseries/regress.py` | regression against the published Table 1 |
 | `timeseries/reference.py` | MDT road centerlines + lidar building footprints staged into the parcel tiles; statewide highways and city names for the low zooms (labels from vendored Noto Sans glyphs under `site/public/fonts`) |
+| `site/src/lib/reports.js` | the five printable reports (county profile, statewide brief, large-holdings update, review worksheet CSV, subdivision activity), composed in the page from the published tables and printed to PDF by the browser |
 
 ## ORION integration (DOR CAMA database)
 
