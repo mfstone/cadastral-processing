@@ -398,15 +398,56 @@ await new Promise((r) => setTimeout(r, 1500));
 
 const legendMode = await page.evaluate(() => document.getElementById('legend').dataset.mode);
 ok('legend switches to the parcel key at depth', legendMode === 'parcel', legendMode);
-// The magenta outline is the one thing on the parcel map that follows the
-// slider; the key must say what it is and name the vintage it refers to.
+// The period outlines are the one thing on the parcel map that follows the
+// slider; the key must say what they are and name the vintage they refer to.
 const keyText = await page.evaluate(() => ({
   text: document.getElementById('legend').innerText,
   swatch: !!document.querySelector('#legend .pl i.ol'),
   date: document.getElementById('snaplabel').textContent.trim() }));
-ok('parcel key explains the magenta outline and names the vintage',
-  keyText.swatch && /first seen in/.test(keyText.text) && keyText.text.includes(keyText.date),
+ok('parcel key explains the period outlines and names the vintage',
+  keyText.swatch && /did not yet exist in|no parcels created after/.test(keyText.text) && keyText.text.includes(keyText.date),
   JSON.stringify({ swatch: keyText.swatch, date: keyText.date, text: keyText.text.slice(0, 120) }));
+// At the first vintage every parcel that came later is outlined by its period
+// and the county gate is in the filter; at the last vintage nothing is outlined.
+const outl = await page.evaluate(async () => {
+  for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click();
+  const sl = document.getElementById('snap');
+  const last = Number(sl.max);
+  const set = (v) => { sl.value = String(v); sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change')); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await wait(1500);
+  set(0); await wait(3000);
+  const m = window.__map.map;
+  const atFirst = m.queryRenderedFeatures({ layers: ['parcel-hl'] }).length;
+  const color = JSON.stringify(m.getPaintProperty('parcel-hl', 'line-color'));
+  const filter = JSON.stringify(m.getFilter('parcel-hl'));
+  const periods = document.querySelectorAll('#legend .pl i.ol').length;
+  set(last); await wait(3000);
+  const atLast = m.queryRenderedFeatures({ layers: ['parcel-hl'] }).length;
+  return { atFirst, atLast, step: color.includes('"step"'), gate: filter.includes('"slice"'), periods };
+});
+ok('parcels created after the selected vintage are outlined by period, none after the last',
+  outl.atFirst > 50 && outl.atLast === 0 && outl.step && outl.gate && outl.periods === 5, JSON.stringify(outl));
+// The fill can be switched off under Parcels: the fill goes transparent, the
+// outlines stay, the key says so, and switching it back restores the paint.
+const fillOff = await page.evaluate(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const m = window.__map.map;
+  const cb = document.getElementById('lyr-parcel-fill');
+  const sl = document.getElementById('snap');
+  const set = (v) => { sl.value = String(v); sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change')); };
+  cb.checked = false; cb.dispatchEvent(new Event('change'));
+  set(0); await wait(3000);
+  const op = JSON.stringify(m.getPaintProperty('parcel-fill', 'fill-opacity'));
+  const outlined = m.queryRenderedFeatures({ layers: ['parcel-hl'] }).length;
+  const noted = /fill off/i.test(document.getElementById('legend').innerText);
+  cb.checked = true; cb.dispatchEvent(new Event('change'));
+  set(Number(sl.max)); await wait(2500);
+  const opBack = JSON.stringify(m.getPaintProperty('parcel-fill', 'fill-opacity'));
+  return { op, outlined, noted, opBack };
+});
+ok('the parcel fill switches off under Parcels, leaving the outlines, and back on',
+  fillOff.op === '0' && fillOff.outlined > 50 && fillOff.noted && fillOff.opBack !== '0', JSON.stringify(fillOff));
 
 const popup = await page.evaluate(() => {
   const f = window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] })[0];

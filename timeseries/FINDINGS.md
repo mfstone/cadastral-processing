@@ -458,6 +458,27 @@ with −1 preserved for 2009's dead value block), `born` (snapshot index of firs
 appearance, which is what keeps the time dimension without 30 copies of the
 geometry), `ac`, `ten`, `loc`, `res`, `cnd`; later `hs`, `hr`, `hp` for the holding (section 17) and `cd`, `yb` for the DOR's dwelling condition and year built (section 19).
 
+`born` is what the slider acts on at parcel depth. The fills are the 2026
+state of each parcel whatever the vintage shown, because the tiles carry
+today's fabric and a parent that was fully subdivided is not in them; hiding
+the lots would leave a hole, not the parent. What the slider changes is the
+outline: every parcel that did not yet exist at the vintage shown is outlined
+in the colour of the period it first appeared (2003-05, 2006-10, 2011-15,
+2016-20, 2021 on), so the 2003 layer carries the whole subdivision history and
+each later vintage what was still to come (2026-11-01; until then only the
+parcels first seen in the one interval were outlined). Over Bozeman at z12.6
+that is 2,135 outlined parcels at 2003-12-22, 1,190 at 2010-01-26, 711 at
+2014-12-10, 306 at 2020-12-31 and none at 2026-09-04. Statewide, 98,110 of
+the 887,124 parcels in the tiles (11.1%) post-date 2010-01-26. The early
+vintages arrived county by county, and a county's whole fabric appearing at
+once is not subdivision: the geocode's first two digits name the county, and
+a parcel first seen in or before the vintage in which its county clears the
+coverage gate (section 13) is that county's baseline and is never outlined.
+The gate is applied in the client from the county cube, so no tile rebuild
+was needed. The five outline colours were validated as a categorical set in
+both themes (adjacent pairs 15.5+ dE light, 19.3+ dark; CVD 10.6+ and 11.8+)
+and sit on a page-coloured casing so they read over every fill.
+
 **No owner name, mailing address, city, or value reaches a tile**, and the parcel
 popup says so in as many words. The geocode is the DOR's own public key — it is
 what the state's Cadastral application searches on — and the boundary is already

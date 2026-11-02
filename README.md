@@ -135,7 +135,7 @@ shared map, one time slider over the 29 vintages, and ten tabs:
 
 | tab | what it answers |
 |---|---|
-| Development | the platted / addressed / built ladder, absorption by cohort, dormant inventory |
+| Development | the platted / addressed / built ladder, absorption by cohort, dormant inventory; at parcel depth the parcels that did not yet exist at the vintage shown are outlined by the period they first appeared (2003-05 to 2021 on) |
 | Condition | the DOR's dwelling condition and year built at eight tax years (2014, 2015-2018, 2024-2026), drawn together as a bivariate grid (condition across, age up; thirds of the units shown, fixed classes on the parcels), the same dwellings re-rated point to point, and the building records as a witness to the ladder |
 | Ownership | tenure, owner distance, out-of-state share, the reservation checkerboard |
 | Fragmentation | acreage by parcel size, agricultural-use acreage |

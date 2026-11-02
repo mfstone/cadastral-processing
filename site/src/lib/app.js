@@ -185,22 +185,31 @@ function parcelLegendHTML() {
   if (!items.length && S.view !== 'condition') return '';
   const when = S.dim.snapshots[S.snap]?.date || 'the selected vintage';
   const title = `Parcels &mdash; ${VIEWS[S.view].parcelLegend || 'colour key'}`;
-  const head = S.view === 'condition'
+  const head = S.parcelFill === false
+    ? `<div class="title">${title}</div><div class="note">Fill off (Layers, under Parcels); the parcel lines and the outlines below remain.</div>`
+    : S.view === 'condition'
     ? bivariateLegendHTML({ title, x: { label: 'poorer condition \u2192', name: 'DOR condition rating',
         classes: ['good or better (8 to 10)', 'average (7)', 'fair or worse (1 to 6)'] },
       y: { label: 'older \u2192', name: 'year built', classes: ['2005 on', '1980 to 2004', 'before 1980'] } })
       + `<div class="pl"><i style="background:${cssVar('--masked')}"></i>no dwelling on record</div>`
     : `<div class="title">${title}</div>`
       + items.map(([label, tok]) => `<div class="pl"><i style="background:${cssVar('--' + tok)}"></i>${label}</div>`).join('');
-  return head
-    // The one thing on the parcel map that follows the slider: an outline on
-    // the parcels that did not exist in the previous vintage.
-    + `<div class="pl"><i class="ol" style="border-color:${cssVar('--created')}"></i>`
-    + `first seen in ${when}: a new plat or a split since the previous vintage `
-    + '(or, in the early years, a county\u2019s data arriving)</div>'
+  // The one thing on the parcel map that follows the slider: the outline on
+  // the parcels that did not yet exist at the vintage shown, by period.
+  const st = periodStarts();
+  const n = S.dim.snapshots.length;
+  const cols = C.ramp('period', PERIODS.length);
+  const later = PERIODS.map(([label], k) => ({ label, color: cols[k], from: st[k], to: (st[k + 1] ?? n) - 1 }))
+    .filter((p) => p.from < n && p.to > S.snap);
+  const outlines = later.length
+    ? `<div class="note">Outlined: parcels that did not yet exist in ${when}, by the period first seen.</div>`
+      + later.map((p) => `<div class="pl"><i class="ol" style="border-color:${p.color}"></i>${p.label}</div>`).join('')
+    : `<div class="pl"><i class="ol" style="border-color:transparent"></i>no parcels created after ${when}</div>`;
+  return head + outlines
     + '<div class="note">Colours are the 2026 state of each parcel. Parcels are '
     + 'drawn as they exist today, so one split later shows as its pieces at every '
-    + 'date; move the snapshot slider to see which parcels were new at each vintage.</div>';
+    + 'date. Parcels first seen in or before the vintage a county\u2019s record arrived '
+    + 'are its baseline, not creations, and are not outlined.</div>';
 }
 
 function refreshLegendForZoom() {
@@ -273,12 +282,59 @@ function unavailableCard(panel, field) {
  * children would leave a hole where the parent was rather than showing the
  * parent. Highlighting what is new is honest; pretending to rewind is not.
  */
+/*
+   The outline on the parcels that did not yet exist at the selected vintage,
+   coloured by the period in which they first appeared, so that the 2003
+   layer shows the whole subdivision history at once and each later vintage
+   shows what was still to come. A parcel first seen in or before the vintage
+   its county's record arrived (the coverage gate) is that county's baseline,
+   not a creation, and is never outlined; the geocode's first two digits are
+   the county, so the gate is applied in the client from the county cube.
+*/
+const PERIODS = [['2003 to 2005', 2003], ['2006 to 2010', 2006], ['2011 to 2015', 2011], ['2016 to 2020', 2016], ['2021 on', 2021]];
+/** The first snapshot index in each period; index 0 is the baseline vintage, never a creation. */
+function periodStarts() {
+  const n = S.dim.snapshots.length;
+  return PERIODS.map(([, y], k) => {
+    const i = S.dim.snapshots.findIndex((sn) => sn.date >= `${y}-01-01`);
+    return i < 0 ? n : (k === 0 ? Math.max(1, i) : i);
+  });
+}
+function periodOf(born) {
+  let p = -1;
+  periodStarts().forEach((st, k) => { if (born >= st) p = k; });
+  return p;
+}
+/** Each county's baseline: the first vintage that clears the coverage gate. */
+function countyBaselines(cov) {
+  const a = cov.data.coverage_ok;
+  const out = {};
+  for (let c = 1; c < cov.nUnits; c++) {
+    let b = 0;
+    if (a) for (let sn = 0; sn < cov.nSnaps; sn++) { if ((a[c * cov.nSnaps + sn] ?? 0) > 0) { b = sn; break; } }
+    out[c] = b;
+  }
+  return out;
+}
+function createdOutline() {
+  const born = ['coalesce', ['get', 'born'], -1];
+  const base = S.countyBase
+    ? ['match', ['to-number', ['slice', ['get', 'id'], 0, 2]],
+        ...Object.entries(S.countyBase).flatMap(([c, b]) => [Number(c), b]), 0]
+    : 0;
+  const st = periodStarts();
+  const n = S.dim.snapshots.length;
+  const cols = C.ramp('period', PERIODS.length);
+  const color = ['step', born, cols[0]];
+  for (let k = 1; k < st.length; k++) if (st[k] > st[k - 1] && st[k] < n) color.push(st[k], cols[k]);
+  return { filter: ['all', ['>', born, S.snap], ['>', born, base]], color };
+}
+
 function parcelStyle() {
   const ord3 = C.ramp('ord3', 3);
   const ord5 = C.ramp('ord5', 5);
   const masked = cssVar('--masked');
-  const iv = S.dim.intervals[Math.min(S.dim.intervals.length - 1, Math.max(0, S.snap - 1))];
-  const bornHere = iv ? ['==', ['get', 'born'], iv.b] : ['==', ['get', 'born'], -999];
+  const created = createdOutline();
 
   switch (S.view) {
     case 'ladder':
@@ -286,7 +342,7 @@ function parcelStyle() {
       // chartreuse, a colour apart from the public-land green so the two kinds
       // of green cannot be read as one; off the ladder in every count.
       return [['match', ['get', 'dev'], 0, ord3[0], 1, ord3[1], 2, ord3[2],
-        4, cssVar('--open-space'), masked], bornHere];
+        4, cssVar('--open-space'), masked], created];
     case 'ownership': {
       const by = S.measure === 'acres' ? 'loc' : 'ten';
       if (by === 'ten') {
@@ -301,7 +357,7 @@ function parcelStyle() {
         ord5[0], 5, ord5[1], 40, ord5[2], 160, ord5[3], 640, ord5[4]], null];
     case 'churn':
       return [['match', ['get', 'ten'],
-        0, masked, 1, masked, 2, ord3[1], masked], bornHere];
+        0, masked, 1, masked, 2, ord3[1], masked], created];
     case 'holdings':
       // The paper's Figure 1 at parcel scale: the four largest holdings in the
       // county, other large holdings, small private; then the land outside
@@ -341,7 +397,7 @@ function parcelStyle() {
     case 'thresholds':
       // The 20-acre statutory line, drawn on the parcels themselves.
       return [['step', ['get', 'ac'],
-        ord5[0], 20, cssVar('--statute'), 40, ord5[2], 160, ord5[4]], bornHere];
+        ord5[0], 20, cssVar('--statute'), 40, ord5[2], 160, ord5[4]], created];
     default:
       return [ord5[2], null];
   }
@@ -366,8 +422,14 @@ const PARCEL_LEGEND = {
 
 function applyParcelStyle() {
   if (!S.map) return;
-  const [color, hl] = parcelStyle();
-  S.map.setParcelPaint(color, hl);
+  if (!S.countyBase && !S.countyBasePending) {
+    // The county gate arrives with the county cube; paint without it first
+    // and once more when it lands.
+    S.countyBasePending = true;
+    countyCube().then((cov) => { S.countyBase = countyBaselines(cov); applyParcelStyle(); });
+  }
+  const [color, outline] = parcelStyle();
+  S.map.setParcelPaint(color, outline);
 }
 
 /* -------------------------------------------------------------------- views */
@@ -1628,10 +1690,12 @@ VIEWS.about = {
           the early years arrived county by county.</li>
         <li><strong>Zoom in.</strong> Past level 10 the aggregate surface gives way to the parcels, coloured by the
           view’s parcel key. Click a parcel for its geocode and attributes; no owner information is shown.
-          A <span style="color:var(--created);font-weight:700">magenta</span> outline marks parcels first seen in the
-          selected vintage.</li>
+          Parcels that did not yet exist at the selected vintage are outlined by the period in which they first
+          appeared (2003 to 2005, 2006 to 2010, 2011 to 2015, 2016 to 2020, 2021 on), so the 2003 layer shows the
+          whole subdivision history at once and each later vintage what was still to come. Parcels first seen in
+          or before the vintage a county’s record arrived are that county’s baseline and are not outlined.</li>
         <li><strong>Layers</strong> adds the township grid, county boundaries, roads with their names, building
-          footprints (the 2018 statewide set, with lidar footprints where flown), reservations, public lands and city limits. The basemap is outlines only;
+          footprints (the 2018 statewide set, with lidar footprints where flown), reservations, public lands and city limits. Under Parcels, the fill can be switched off to leave only the parcel lines and the period outlines. The basemap is outlines only;
           the basemap menu offers an in-house Montana basemap built from the State Library’s frameworks (roads, water,
           places, buildings and address points, served from this site) and an OpenStreetMap one; only the latter
           fetches anything from a third party.</li>
@@ -1853,7 +1917,19 @@ function buildControls() {
 
   // --- layer list ------------------------------------------------------
   const status = $('lyr-status');
-  $('lyr-parcels').addEventListener('change', (e) => S.map.setParcelsVisible(e.target.checked));
+  $('lyr-parcels').addEventListener('change', (e) => {
+    S.map.setParcelsVisible(e.target.checked);
+    $('lyr-parcel-fill').disabled = !e.target.checked;
+  });
+  // The fill is the view's parcel key; off, the thin parcel lines and the
+  // period outlines remain, which is the readable state when the outlines
+  // are what the reader came for.
+  $('lyr-parcel-fill').addEventListener('change', (e) => {
+    S.parcelFill = e.target.checked;
+    S.map.setParcelFill(S.parcelFill);
+    const l = $('legend');
+    if (l.dataset.mode === 'parcel') l.innerHTML = parcelLegendHTML();
+  });
   $('lyr-townships').addEventListener('change', (e) => {
     const v = e.target.checked ? 'visible' : 'none';
     for (const id of ['township-line']) {
@@ -1925,7 +2001,7 @@ export async function boot() {
       const born = Number(props.born);
       const bornTxt = born >= 0 && born < S.dim.snapshots.length
         ? (born === 0 ? `present in ${S.dim.snapshots[0].date} (or earlier)`
-                      : `first seen ${S.dim.snapshots[born].date}`)
+                      : `first seen ${S.dim.snapshots[born].date}${periodOf(born) >= 0 ? ` (${PERIODS[periodOf(born)][0]})` : ''}`)
         : 'unknown';
       const rows = [
         ['acres', Number(props.ac).toLocaleString(undefined, { maximumFractionDigits: 1 })],

@@ -47,6 +47,10 @@
   --bv-12: #758acb; --bv-22: #91308e; --bv-32: #690031;
   --bv-13: #3448bc; --bv-23: #3c0078; --bv-33: #1e001e;
 
+  /* Outline colours for the period a parcel first appeared, oldest to newest:
+     violet, blue, teal, magenta, crimson. Lines over the tan and brown parcel
+     fills, drawn on a page-coloured casing; validated as a categorical set. */
+  --period-1: #5b2fb8; --period-2: #1f78d1; --period-3: #0b9f8f; --period-4: #b5179e; --period-5: #d6214a;
   --statute: #af3c3a;
   --ui: #04665e; --ui-ink: #ffffff;
   --masked: #ddd6c4;
@@ -84,6 +88,8 @@
     --bv-13: #6786ff; --bv-23: #afb1fd; --bv-33: #fee7fc;
 
     --statute: #e66e68;
+
+    --period-1: #d4b4fe; --period-2: #0091bf; --period-3: #0bd494; --period-4: #ef53bd; --period-5: #fb855e;
     --ui: #45c1b4; --ui-ink: #11100d;
     --masked: #3a3529;
     --public-land: #4fae76;
@@ -120,6 +126,8 @@
   --bv-13: #6786ff; --bv-23: #afb1fd; --bv-33: #fee7fc;
 
   --statute: #e66e68;
+
+  --period-1: #d4b4fe; --period-2: #0091bf; --period-3: #0bd494; --period-4: #ef53bd; --period-5: #fb855e;
   --ui: #45c1b4; --ui-ink: #11100d;
   --masked: #3a3529;
     --public-land: #4fae76;
@@ -212,6 +220,8 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #layers:not([open]) summary::before { content: '\25B8  '; }
 #layers label { display: flex; align-items: center; gap: 6px; margin-top: 5px; color: var(--ink-2); }
 #layers hr { border: 0; border-top: 1px solid var(--grid); margin: 7px 0 2px; }
+#layers label.sub { margin-left: 22px; margin-top: 2px; font-size: 11px; }
+#layers label.sub input:disabled + * { opacity: 0.5; }
 #layers .hint { color: var(--ink-muted); font-size: 10.5px; }
 #lyr-status { margin-top: 5px; }
 /* Keep clear of the zoom buttons. */

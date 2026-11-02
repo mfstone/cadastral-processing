@@ -38,6 +38,9 @@ import { Protocol as PMTilesProtocol } from 'pmtiles';
 // protocol, registered once for the page.
 maplibregl.addProtocol('pmtiles', new PMTilesProtocol().tile);
 
+/** The parcel fill's opacity by zoom; zero when the fill is switched off under Layers. */
+const PARCEL_FILL_OPACITY = ['interpolate', ['linear'], ['zoom'], 10, 0.35, 11, 0.85];
+
 const MT_BOUNDS = [[-116.4, 44.2], [-103.9, 49.1]];
 
 function cssv(name) {
@@ -220,12 +223,12 @@ export class UnitMap {
       minzoom: 10,
       paint: {
         'fill-color': cssv('--ord5-2') || '#b3774d',
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 10, 0.35, 11, 0.85],
+        'fill-opacity': this.parcelFill === false ? 0 : PARCEL_FILL_OPACITY,
       },
     });
     m.addLayer({
       id: 'parcel-line', type: 'line', source: 'parcels', 'source-layer': 'parcels',
-      minzoom: 12.5,
+      minzoom: this.parcelFill === false ? 10 : 12.5,
       paint: { 'line-color': mapLine(), 'line-width': 0.4, 'line-opacity': 0.55 },
     });
     // --- reference layers from the same tiles: buildings, then roads -------
@@ -260,6 +263,15 @@ export class UnitMap {
     });
     // Parcels first seen in the selected interval: magenta, a colour nothing
     // else on the map uses.
+    // A page-coloured casing under the outline so the period colour reads
+    // against every parcel fill, the browns included.
+    m.addLayer({
+      id: 'parcel-hl-case', type: 'line', source: 'parcels', 'source-layer': 'parcels',
+      minzoom: 10, layout: { 'line-join': 'round' },
+      filter: ['==', ['get', 'born'], -999],
+      paint: { 'line-color': cssv('--page') || '#ffffff', 'line-opacity': 0.9,
+               'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.4, 13, 3.8, 15, 5] },
+    });
     m.addLayer({
       id: 'parcel-hl', type: 'line', source: 'parcels', 'source-layer': 'parcels',
       minzoom: 10, layout: { 'line-join': 'round' },
@@ -342,7 +354,7 @@ export class UnitMap {
       'ov-publiclands-fill',
       'bld-fill', 'road-case', 'road-line', 'hwy-case', 'hwy-line',
       'ov-publiclands-line', 'ov-reservations-fill', 'ov-reservations-line', 'ov-cities-line',
-      'parcel-hl',
+      'parcel-hl-case', 'parcel-hl',
       'county-line', 'township-sel', 'county-sel',
       'road-label-major', 'road-label', 'city-label-big', 'city-label-mid', 'city-label-small',
       ...base.filter((l) => l.type === 'symbol').map((l) => l.id),
@@ -439,7 +451,7 @@ export class UnitMap {
     // are few and large, so they read best as an annotation: an outline, no
     // fill.
     if (kind === 'publiclands') {
-      const above = ['bld-fill', 'parcel-hl', 'township-line'].find((id) => m.getLayer(id));
+      const above = ['bld-fill', 'parcel-hl-case', 'parcel-hl', 'township-line'].find((id) => m.getLayer(id));
       m.addLayer({
         id: 'ov-publiclands-fill', type: 'fill', source: 'ov-publiclands',
         paint: { 'fill-color': cssv('--public-land'), 'fill-opacity': 0.38 },
@@ -453,7 +465,7 @@ export class UnitMap {
       // City limits are annotation too: a dashed outline in a colour nothing
       // else on the map uses, no fill, above the parcels so the limit stays
       // legible at lot scale, where it is the question most often asked.
-      const above = ['bld-fill', 'parcel-hl', 'township-line'].find((id) => m.getLayer(id));
+      const above = ['bld-fill', 'parcel-hl-case', 'parcel-hl', 'township-line'].find((id) => m.getLayer(id));
       m.addLayer({
         id: 'ov-cities-line', type: 'line', source: 'ov-cities',
         paint: { 'line-color': cssv('--city-limit'), 'line-dasharray': [3, 1.5],
@@ -483,20 +495,38 @@ export class UnitMap {
   }
 
   setParcelsVisible(on) {
-    for (const id of ['parcel-fill', 'parcel-line', 'parcel-hl', 'parcel-sel-case', 'parcel-sel']) {
+    for (const id of ['parcel-fill', 'parcel-line', 'parcel-hl-case', 'parcel-hl', 'parcel-sel-case', 'parcel-sel']) {
       if (this.map.getLayer(id)) {
         this.map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
       }
     }
   }
 
-  /** Data-driven paint for the parcel layer, plus an optional highlight filter. */
-  setParcelPaint(colorExpr, highlightFilter) {
+  /** The view's fill on or off. Off leaves the parcel lines (from z10 rather
+   *  than z12.5, so the fabric still reads) and the outlines; the fill layer
+   *  stays rendered at zero opacity so clicks and hover still resolve. */
+  setParcelFill(on) {
+    this.parcelFill = on;
+    if (this.map.getLayer('parcel-fill')) {
+      this.map.setPaintProperty('parcel-fill', 'fill-opacity', on ? PARCEL_FILL_OPACITY : 0);
+    }
+    if (this.map.getLayer('parcel-line')) this.map.setLayerZoomRange('parcel-line', on ? 12.5 : 10, 24);
+  }
+
+  /** Data-driven paint for the parcel layer, plus the outline on the parcels
+   *  that did not yet exist at the selected vintage: `outline` is
+   *  { filter, color } (the colour a data-driven expression by period) or
+   *  null for none. */
+  setParcelPaint(colorExpr, outline) {
     if (this.map.getLayer('parcel-fill')) {
       this.map.setPaintProperty('parcel-fill', 'fill-color', colorExpr);
     }
-    if (this.map.getLayer('parcel-hl')) {
-      this.map.setFilter('parcel-hl', highlightFilter || ['==', ['get', 'born'], -999]);
+    const filter = outline?.filter || ['==', ['get', 'born'], -999];
+    for (const id of ['parcel-hl-case', 'parcel-hl']) {
+      if (this.map.getLayer(id)) this.map.setFilter(id, filter);
+    }
+    if (this.map.getLayer('parcel-hl') && outline?.color) {
+      this.map.setPaintProperty('parcel-hl', 'line-color', outline.color);
     }
   }
 
@@ -644,7 +674,9 @@ export class UnitMap {
       .getPropertyValue('--map-line').trim() || '#a0967f';
     if (this.map.getLayer('township-line')) this.map.setPaintProperty('township-line', 'line-color', line);
     if (this.map.getLayer('county-line')) this.map.setPaintProperty('county-line', 'line-color', cssv('--county-line'));
-    if (this.map.getLayer('parcel-hl')) this.map.setPaintProperty('parcel-hl', 'line-color', cssv('--created') || '#c4188f');
+    // parcel-hl's colour is data-driven by period and is re-applied by the
+    // app's re-render; only its casing follows the page colour here.
+    if (this.map.getLayer('parcel-hl-case')) this.map.setPaintProperty('parcel-hl-case', 'line-color', cssv('--page') || '#ffffff');
     for (const [id, prop, tok] of [['bld-fill', 'fill-color', '--building'], ['road-case', 'line-color', '--road-case'],
                                    ['hwy-case', 'line-color', '--road-case'], ['hwy-line', 'line-color', '--road-fill']]) {
       if (this.map.getLayer(id)) this.map.setPaintProperty(id, prop, cssv(tok));
