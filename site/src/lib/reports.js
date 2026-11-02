@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------------------------
-   reports.js -- the five printable reports.
+   reports.js -- the six printable reports.
 
    Each report is composed in the page from the same published tables the
    views read, laid out as a paper document (Letter, one column, 7in of
@@ -36,6 +36,12 @@ export const REPORTS = {
       + 'dormant inventory, ownership and out-of-state share, churn, new-lot sizes against the statutory '
       + 'lines, large holdings and CLO4, and the review queue. For a county planning office or a '
       + 'conservation district.',
+  },
+  condition: {
+    label: 'Housing condition profile', needs: ['county'],
+    blurb: 'One county’s dwellings as the Department of Revenue’s appraisers recorded them: condition, '
+      + 'year built and type, the townships where the poorer housing is, and what the building records '
+      + 'say about the development ladder, at eight tax years from three ORION exports.',
   },
   trends: {
     label: 'Statewide trends brief', needs: [],
@@ -276,7 +282,9 @@ async function profile(host, { county }, ctx) {
   const s2b = sec(host, 'Absorption: share of a cohort built, by age',
     'Of the lots created at each vintage in this county, the share carrying an assessed building N years later. '
     + 'Cohorts with fewer than twenty lots at an age are left blank. The age-0 and age-1 points are inflated by '
-    + 'splits that hand an existing house to a child parcel.');
+    + 'splits that hand an existing house to a child parcel (statewide, a third of new lots with a dwelling; the housing '
+    + 'condition profile gives this county’s share), and a January export carries the previous year’s roll, so a '
+    + 'cohort’s built share can run up to a year behind.');
   absorptionChart(s2b, ctx, agg, `Absorption by cohort and age in years, ${name} County`);
 
   const bs = await ctx.loadTable('dormant_by_size');
@@ -478,6 +486,225 @@ async function profile(host, { county }, ctx) {
     'Figures in this profile are the county’s own; ratios (CLO4, shares) are computed within the county and are not comparable to a statewide ratio by subtraction.',
   ]);
   return { title: `${name} County cadastral profile ${dates[S]}` };
+}
+
+/* ================================================= 1b. housing condition */
+/*
+   The DOR's building records (stage 11): eight tax years from three ORION
+   exports, each joined to the parcel export carrying its roll. The headline
+   is the newest point; the series and the point-to-point re-ratings have a
+   section of their own. The rating is CDU through 2014 and the DOR's
+   physical-condition component after, named per point.
+*/
+const CD_COLS = [...Array(8).keys()].map((i) => `n_cd${i}`);
+const YB_COLS = [...Array(9).keys()].map((i) => `n_yb${i}`);
+const num = (v) => (typeof v === 'bigint' ? Number(v) : Number(v ?? 0));
+const rowObj = (t, r) => Object.fromEntries(t.columns.map((c, i) => [c, num(r[i])]));
+const pctOf = (n, d) => (d ? (100 * n) / d : NaN);
+const shortCond = (l) => String(l).replace(/ \(\d+\)/, '');
+const ratedOf = (o) => CD_COLS.reduce((a, n) => a + o[n], 0);
+const belowOf = (o) => pctOf(o.n_cd0 + o.n_cd1 + o.n_cd2 + o.n_cd3, ratedOf(o));
+const ybTot = (o) => YB_COLS.reduce((a, n) => a + o[n], 0);
+const pre1980Of = (o) => pctOf(o.n_yb0 + o.n_yb1 + o.n_yb2 + o.n_yb3 + o.n_yb4, ybTot(o));
+
+async function condition(host, { county }, ctx) {
+  const name = ctx.countyName(county);
+  const cm = ctx.meta.cama || {};
+  const ty = cm.tax_year || 2026;
+  const L = ctx.dim.labels.condition || [];
+  const YBL = ctx.dim.labels.year_built || [];
+  const [cty, twp, tim, cbd, tr] = await Promise.all(
+    ['cama_county', 'cama_township', 'cama_timing', 'cama_condition_decade', 'cama_transitions'].map((n) => ctx.loadTable(n)));
+  const cc = col(cty);
+  // The series points, newest last; the headline is the newest, the series section has them all.
+  const points = [...new Set(cty.rows.map((x) => num(x[cc('s')])))].sort((a, b) => a - b);
+  const sNew = points[points.length - 1];
+  const pmeta = (sp) => (cm.points || []).find((p) => p.s === sp) || {};
+  const tyOf = (sp) => pmeta(sp).tax_year ?? sp;
+  const rowFor = (code, sp) => {
+    const x = cty.rows.find((y) => num(y[cc('county_n')]) === code && num(y[cc('s')]) === sp);
+    return x ? rowObj(cty, x) : null;
+  };
+  const c = rowFor(county, sNew), s = rowFor(0, sNew);
+  if (!c || !s) throw new Error(`no building records for county ${county}`);
+  const last = ctx.dim.snapshots[ctx.nSnaps - 1].date;
+  const pointDate = ctx.dim.snapshots[sNew]?.date ?? last;
+
+  masthead(host, ctx, {
+    kind: 'housing condition profile', title: `${name} County`,
+    scope: 'Dwellings on record with the Department of Revenue: their condition, age and type, and what '
+      + 'the appraiser’s records say about the development ladder',
+    extra: `DOR building records at tax year ${ty} (export ${pointDate}, refresh ${cm.refresh_date || 'n/a'}); `
+      + `series ${points.map(tyOf).join(', ')}`,
+  });
+
+  const s0 = sec(host, `Dwellings on record, tax year ${ty}`);
+  C.stats(s0, [
+    { value: fmtInt(c.dwellings), label: 'parcels with a dwelling',
+      detail: `${fmtInt(c.n_dwell_total)} dwellings · ${fmtInt(c.rated)} rated` },
+    { value: fmtPct(belowOf(c)), label: 'rated fair or worse', detail: `statewide ${fmtPct(belowOf(s))}` },
+    { value: fmtInt(c.n_cd0 + c.n_cd1), label: 'unsound or very poor',
+      detail: `${fmtPct(pctOf(c.n_cd0 + c.n_cd1, ratedOf(c)))} of rated · statewide ${fmtPct(pctOf(s.n_cd0 + s.n_cd1, ratedOf(s)))}` },
+    { value: c.yb_median > 0 ? String(Math.round(c.yb_median)) : '--', label: 'median year built',
+      detail: `${fmtPct(pre1980Of(c))} built before 1980 · statewide ${fmtPct(pre1980Of(s))}` },
+    { value: fmtPct(pctOf(c.mh, c.dwellings)), label: 'manufactured homes',
+      detail: `${fmtInt(c.condo_th)} condominium or townhouse · ${fmtInt(c.partial)} partly complete` },
+  ]);
+  note(s0, 'Through tax year 2014 the DOR filled CDU, the composite condition–desirability–utility rating its data '
+    + 'dictionary describes. At the 2015 reappraisal it retired the composite by copying it into four components and '
+    + `has rated them apart since; in this refresh CDU carries ${fmtInt(cm.orion?.dwelling_rows_with_cdu ?? 0)} of `
+    + `${fmtInt(cm.orion?.dwelling_rows ?? 0)} dwelling rows. The condition reported from 2015 is the physical-condition `
+    + 'component, on the same scale, for the principal dwelling on each parcel; the 2014 point is CDU.');
+
+  const s1 = sec(host, 'Condition of the principal dwelling',
+    `The DOR’s rating at tax year ${ty}, assigned at inspection on a scale from Unsound (1) to Excellent (10).`);
+  C.histogram(s1, { values: CD_COLS.map((n) => c[n]), xLabels: L.map(shortCond), color: cssVar('--cat-1'),
+    xTickEvery: 1, caption: 'Dwellings by condition class' });
+  C.table(s1, { headers: ['condition', 'dwellings', 'share', 'statewide share'],
+    rows: CD_COLS.map((n, i) => [L[i], fmtInt(c[n]), fmtPct(pctOf(c[n], ratedOf(c))), fmtPct(pctOf(s[n], ratedOf(s)))]),
+    caption: 'Condition classes, county against statewide' });
+
+  const s2 = sec(host, 'When the dwellings were built', 'Earliest dwelling on the parcel, by the DOR’s year built.');
+  C.histogram(s2, { values: YB_COLS.map((n) => c[n]), xLabels: YBL, color: cssVar('--cat-3'), xTickEvery: 1,
+    caption: 'Dwellings by year built' });
+  C.table(s2, { headers: ['built', 'dwellings', 'share', 'statewide share'],
+    rows: YB_COLS.map((n, i) => [YBL[i], fmtInt(c[n]), fmtPct(pctOf(c[n], ybTot(c))), fmtPct(pctOf(s[n], ybTot(s)))]),
+    caption: 'Year-built cohorts, county against statewide' });
+
+  const s3 = sec(host, 'Condition by age',
+    'Share of each year-built cohort in each condition class. Older housing should rate worse; where it does not, '
+    + 'the stock has been rebuilt or the rating is stale.');
+  const bc = col(cbd);
+  const grid = [...Array(8)].map(() => new Float64Array(9));
+  for (const r of cbd.rows) {
+    if (num(r[bc('county_n')]) !== county || num(r[bc('s')]) !== sNew) continue;
+    grid[num(r[bc('cond')])][num(r[bc('yb_bin')])] += num(r[bc('dwellings')]);
+  }
+  C.stackedArea(s3, { series: grid, labels: L.map(shortCond), colors: C.ramp('seq', 8).slice().reverse(),
+    xLabels: YBL, share: true, caption: 'Condition by year-built cohort' });
+  C.table(s3, { headers: ['built', 'rated dwellings', 'fair or worse'],
+    rows: YBL.map((b, j) => {
+      const tot = grid.reduce((a, g) => a + g[j], 0);
+      return [b, fmtInt(tot), fmtPct(pctOf(grid[0][j] + grid[1][j] + grid[2][j] + grid[3][j], tot))];
+    }), caption: 'Share rated fair or worse, by cohort' });
+
+  const s3b = sec(host, 'Condition over the series',
+    `Every point the three ORION refreshes give: tax years ${points.map(tyOf).join(', ')}, each joined to the parcel `
+    + 'export that carries its roll. The 2014 point is the composite CDU and the rest the physical-condition component '
+    + 'it was copied into, so the seam is a change of field, not of housing. No refresh is on hand between 2018 and 2024.');
+  const serC = points.map((sp) => rowFor(county, sp) || {});
+  const serS = points.map((sp) => rowFor(0, sp) || {});
+  const xl = points.map((sp) => String(tyOf(sp)));
+  C.stackedArea(s3b, { series: CD_COLS.map((n) => serC.map((o) => o[n] || 0)), labels: L.map(shortCond),
+    colors: C.ramp('seq', 8).slice().reverse(), xLabels: xl, share: true, xTickEvery: 1,
+    caption: `Condition composition by tax year, ${name} County` });
+  C.lineChart(s3b, { series: [serC.map((o) => (o.dwellings ? belowOf(o) : NaN)), serS.map((o) => (o.dwellings ? belowOf(o) : NaN))],
+    labels: [name, 'Montana'], colors: [cssVar('--cat-1'), cssVar('--cat-3')], xLabels: xl, fmt: (v) => fmtPct(v),
+    xTickEvery: 1, caption: 'Share rated fair or worse, by tax year' });
+  C.table(s3b, { headers: ['tax year', 'rating field', 'rated dwellings', 'fair or worse', 'statewide', 'unsound or very poor', 'median year built'],
+    rows: points.map((sp, i) => [String(tyOf(sp)), pmeta(sp).rating_field || '', fmtInt(ratedOf(serC[i])), fmtPct(belowOf(serC[i])),
+      fmtPct(belowOf(serS[i])), fmtInt((serC[i].n_cd0 || 0) + (serC[i].n_cd1 || 0)), serC[i].yb_median > 0 ? String(Math.round(serC[i].yb_median)) : '--']),
+    caption: 'The series, county against statewide' });
+  const trc = col(tr);
+  const trRows = (code) => tr.rows.filter((x) => num(x[trc('county_n')]) === code).map((x) => rowObj(tr, x)).sort((p, q) => p.s - q.s);
+  const trC = trRows(county), trS = trRows(0);
+  if (trC.length) {
+    C.table(s3b, { headers: ['interval', 'dwellings followed', 'same', 'worse', 'better', 'two or more steps worse', 'statewide worse'],
+      rows: trC.map((t) => {
+        const st = trS.find((x) => x.s_from === t.s_from && x.s === t.s) || {};
+        return [`${tyOf(t.s_from)} → ${tyOf(t.s)}`, fmtInt(t.n), fmtPct(pctOf(t.same, t.n)), fmtPct(pctOf(t.worse, t.n)),
+          fmtPct(pctOf(t.better, t.n)), fmtPct(pctOf(t.worse2plus, t.n)), fmtPct(pctOf(st.worse, st.n))];
+      }),
+      caption: 'The same dwellings re-rated, point to point: single-dwelling properties rated at both ends, followed by the DOR’s property id' });
+  }
+
+  const tc = col(twp);
+  const tw = twp.rows.filter((r) => num(r[tc('county_n')]) === county && num(r[tc('s')]) === sNew).map((r) => {
+    const o = rowObj(twp, r);
+    const t = ctx.dim.townships[o.u];
+    return { label: t ? t.label : String(o.u), rated: ratedOf(o), v: belowOf(o) };
+  }).filter((d) => d.rated >= 25 && isFinite(d.v)).sort((a, b) => b.v - a.v);
+  if (tw.length) {
+    const s4 = sec(host, 'Where the housing in poorer condition is',
+      'Townships in the county with at least 25 rated dwellings, by the share rated fair or worse. A township '
+      + 'straddling a county line is listed under the county that holds most of its parcels.');
+    rankSplit(s4, tw.slice(0, 24).map((d) => ({ label: d.label, value: d.v, detail: `${fmtInt(d.rated)} rated` })),
+      { color: cssVar('--cat-1'), fmt: (v) => fmtPct(v), caption: 'Share rated fair or worse, by township' });
+  }
+
+  const s5 = sec(host, 'What the appraiser’s records say about the development ladder',
+    'The dashboard’s ladder reads two inferred signals from the parcel layer: an assessed building value and a '
+    + 'situs house number. The DOR’s dwelling, commercial and outbuilding records are the appraiser’s own, keyed on '
+    + 'the same geocode, and the State Library’s Structures Framework places an address point on the structure itself. '
+    + 'Each row is a test with a count on both sides, the statewide figure beside it.');
+  const vacant = (o) => o.parcels_tested - o.improved_layer - o.dor_only;
+  const tests = [
+    { t: 'Parcels where the two records agree, built or not', pct: true,
+      a: pctOf(c.agree_built + vacant(c), c.parcels_tested), b: pctOf(s.agree_built + vacant(s), s.parcels_tested),
+      n: `${fmtInt(c.parcels_tested)} parcels tested` },
+    { t: 'Built per the parcel layer, no DOR structure', pct: false, a: c.layer_only, b: s.layer_only,
+      n: `${fmtPct(pctOf(c.layer_only, c.improved_layer))} of parcels with a building value` },
+    { t: 'DOR structure, parcel layer unimproved', pct: false, a: c.dor_only, b: s.dor_only,
+      n: `${fmtPct(pctOf(c.dor_only, c.struct_dor))} of parcels with a DOR structure` },
+    { t: 'House numbers that carry a dwelling', pct: true,
+      a: pctOf(c.hn_dwell, c.hn_dwell + c.hn_nodwell), b: pctOf(s.hn_dwell, s.hn_dwell + s.hn_nodwell),
+      n: `${fmtInt(c.nohn_dwell)} dwellings without a house number` },
+    ...(c.addr_tested > 0 ? [
+      { t: 'House numbers with an address point on the parcel (Structures Framework)', pct: true,
+        a: pctOf(c.addr_hn_pt, c.addr_hn_pt + c.addr_hn_nopt), b: pctOf(s.addr_hn_pt, s.addr_hn_pt + s.addr_hn_nopt),
+        n: `${fmtInt(c.addr_pt_nohn)} address points on parcels without a house number` },
+      { t: 'Dwellings on record with a residential address point', pct: true,
+        a: pctOf(c.addr_dw_res, c.addr_dw_res + c.addr_dw_nores), b: pctOf(s.addr_dw_res, s.addr_dw_res + s.addr_dw_nores),
+        n: `${fmtInt(c.addr_res_nodw)} residential points on parcels with no dwelling on record` }] : []),
+    { t: 'Dwellings built 2004 on, on the ladder by the first export that could carry them', pct: true,
+      a: pctOf(c.timing_ontime, c.timing_n), b: pctOf(s.timing_ontime, s.timing_n),
+      n: `${fmtInt(c.timing_never)} of ${fmtInt(c.timing_n)} never seen` },
+    { t: 'Dormant lots under 40 acres that carry a dwelling', pct: false, a: c.dormant_dwell, b: s.dormant_dwell,
+      n: `of ${fmtInt(c.dormant_lt40)} dormant lots · ${fmtInt(c.dormant_permit)} hold a new-dwelling permit` },
+    { t: 'Addressed, not built, but a dwelling on record', pct: false, a: c.stage1_dwell, b: s.stage1_dwell,
+      n: `of ${fmtInt(c.stage1)} parcels at the addressed stage` },
+    { t: 'New lots (plat or split) whose dwelling is older than the lot', pct: true,
+      a: pctOf(c.born_older, c.born_dwell), b: pctOf(s.born_older, s.born_dwell),
+      n: `${fmtInt(c.born_older)} of ${fmtInt(c.born_dwell)} new lots with a dwelling` },
+    { t: 'Building values equal to the DOR final value', pct: true,
+      a: pctOf(c.value_equal, c.value_n), b: pctOf(s.value_equal, s.value_n),
+      n: `${fmtInt(c.value_n)} parcels, tax year ${cm.witness?.building_value_witness?.tax_year ?? ty}` },
+    { t: 'Dwellings inspected within five years', pct: true,
+      a: pctOf(c.insp_recent, c.dwellings), b: pctOf(s.insp_recent, s.dwellings), n: '' },
+  ];
+  C.table(s5, { headers: ['test', name, 'Montana', 'note'],
+    rows: tests.map((x) => [x.t, x.pct ? fmtPct(x.a) : fmtInt(x.a), x.pct ? fmtPct(x.b) : fmtInt(x.b), x.n]),
+    caption: 'Witness tests, county against statewide' });
+  const ti = col(tim);
+  const names = ['earlier', 'on_time', 'late1', 'late2plus', 'never'];
+  const by = new Map();
+  for (const r of tim.rows) {
+    if (num(r[ti('county_n')]) !== county || num(r[ti('s')]) !== sNew) continue;
+    by.set(num(r[ti('yb')]), names.map((n) => num(r[ti(n)])));
+  }
+  const years = [...by.keys()].sort((a, b) => a - b);
+  if (years.length) {
+    C.stackedArea(s5, { series: names.map((_, i) => years.map((y) => by.get(y)[i])),
+      labels: ['earlier structure on the parcel', 'on time', 'one roll late', 'two or more rolls late', 'never'],
+      colors: C.ramp('ord5', 5), xLabels: years.map(String), share: true,
+      caption: 'Dwellings by year built: when the ladder first showed a building value, in tax-year rolls' });
+  }
+  note(s5, 'A dwelling built in year Y goes on the Y+1 roll, and an export carries its own year’s roll only from '
+    + 'July: the January exports still hold the previous year’s values. “On time” is the first export that could '
+    + 'carry the dwelling; “earlier structure” means a value stood on the parcel before the year built; “never” is '
+    + 'a miss, a dwelling the DOR holds that the parcel layer has not valued. The January export of the following '
+    + 'year carries the roll, so the missing 2012 and 2015 exports cost no dwelling its on-time reading.');
+
+  colophon(host, ctx, [
+    'Dwelling condition, year built, permits and inspections come from three ORION refreshes joined into eight '
+      + `tax years (${points.map(tyOf).join(', ')}); the headline figures are tax year ${ty}.`,
+    'The condition is the principal dwelling’s (largest depreciated cost); the year built is the earliest '
+      + 'dwelling on the parcel.',
+    'Manufactured homes not attached to real property, and condominium units whose geocode is not a parcel, '
+      + 'are DOR properties with no parcel and are outside every count here.',
+    'A rating is as current as the last inspection; the share of dwellings inspected within five years is reported above.',
+  ]);
+  return { title: `${name} County housing condition ${last}` };
 }
 
 /* ============================================================= 2. trends */
@@ -836,7 +1063,7 @@ async function activity(host, { a, b }, ctx) {
 }
 
 /* ================================================================ entry */
-const RENDER = { profile, trends, holdings: holdingsUpdate, worksheet, activity };
+const RENDER = { profile, condition, trends, holdings: holdingsUpdate, worksheet, activity };
 
 /**
  * Compose one report into `host`. The host must be laid out at its print

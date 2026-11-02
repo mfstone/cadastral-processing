@@ -453,10 +453,10 @@ cannot be met if anything was dropped.
 
 ### What is on a tile, and what is not
 
-The geocode plus seven derived codes: `dev` (the platted/addressed/built ladder,
+The geocode plus a dozen derived codes: `dev` (the platted/addressed/built ladder,
 with −1 preserved for 2009's dead value block), `born` (snapshot index of first
 appearance, which is what keeps the time dimension without 30 copies of the
-geometry), `ac`, `ten`, `loc`, `res`, `cnd`.
+geometry), `ac`, `ten`, `loc`, `res`, `cnd`; later `hs`, `hr`, `hp` for the holding (section 17) and `cd`, `yb` for the DOR's dwelling condition and year built (section 19).
 
 **No owner name, mailing address, city, or value reaches a tile**, and the parcel
 popup says so in as many words. The geocode is the DOR's own public key — it is
@@ -494,6 +494,90 @@ acreage and leaves every one of those sections standing; 60 m simplification is
 at parcel zoom a visibly wrong boundary beside crisp parcel edges would cost more
 than the bytes are worth. The before/after renders differ by 1.3% of pixels at
 z8, all of it antialiasing on simplified edges.
+
+### Building footprints: the 2018 set is the base, the lidar confirms it
+
+The first footprint layer was the State Library's lidar set alone, 295,386
+footprints across 37 project areas. Measured against the appraiser's
+dwellings (stage 11, the 2026 roll) it was thinner than "an eighth of the
+state" suggests, because the flown areas are river corridors and mountain
+blocks: 30.0% of the 383,883 dwelling parcels lie inside a project area and
+26.0% contain a footprint; in Gallatin County 12.9% and 10.0%, in Bozeman
+9%, and twenty counties have none. Inside the flown areas capture is 84.5%.
+
+Microsoft's computer-generated set (the 2018-07-17 release, ODbL,
+redistributed by the State Library) is statewide: 762,288 polygons, 754,020
+of them on a parcel, and 80.0% of dwelling parcels carry one. Its vintage is
+the Bing composite's, which the metadata cannot state and the year-built
+record can: 89.7% of dwellings built before 2015 have a 2018 footprint,
+12.0% of those built 2015-2017, 10.7% of those built 2018 or later. Gallatin's
+69.8% is low for that reason, not for want of imagery.
+
+The two sets intersect on 206,983 pairs. Inside the flown areas 88.2% of the
+2018 footprints touch a lidar footprint (89.9% of those of 40 m² or more);
+66.0% of lidar footprints touch a 2018 one, 81.1% of those of 40 m² or more,
+because the lidar sees sheds the imagery model does not (64,541 lidar
+footprints are under 40 m²). The overlap of an intersecting pair is 0.67 of
+the union at the median and 0.31 at the tenth percentile: the same building,
+drawn loosely by the 2018 model. The published layer keeps the lidar geometry
+wherever a pair exists, drops the 2018 polygon it touches, and tags every
+footprint with its source (`src`: 1 the 2018 set outside the flown areas,
+2 lidar only, 3 lidar confirmed by the 2018 set, 4 the 2018 set inside a
+flown area that lidar did not see, gone by the flight or missed, drawn at
+half strength). Measured on the two sets before merging they put a footprint on 82.5% of
+dwelling parcels statewide and 91.0% inside the flown areas; the published
+layer, re-tested in the stage against stage 11's frame, carries 81.8%
+(314,142 of 383,883; the 2018 set 79.4%, the lidar 26.0%; 89.1% of dwellings
+built before 2015, 12.2% of 2015-2017, 10.7% of 2018 on), the small
+difference being 2018 polygons that lidar replaced with a footprint whose
+point falls on a neighbouring parcel. Gallatin: 24,676 of 34,336 (71.9%).
+The test and the per-county counts are written to `reference_qa.json`.
+
+The lidar height attribute is not carried: it is feet in most projects,
+metres in the two 2023 projects, ground elevation in Sanders and null in the
+five Phase 1 projects. The Teton 2020 project has a boundary and no
+footprints. The project boundaries are published as `lidar_coverage.geojson`
+and not yet drawn.
+
+### An in-house basemap from the same frameworks
+
+The basemap menu's OpenStreetMap option was the one third-party request on
+the page. `basemap/` builds the in-house parallel from State Library data
+alone: the Transportation Framework (every road from z9, primary and
+secondary routes dissolved by name below), NHD High Resolution water (lakes
+and reservoirs of a square kilometre or more below z10, everything above
+0.4 ha from z10; named streams, rivers of 40 miles or more at the low
+zooms), the merged building footprints, the Structures Framework's address
+numbers and named structures, GNIS populated places ranked by the
+incorporated-cities layer, county and city-limit lines and the public-lands
+wash. Twelve layers, zooms 4 to 13, one PMTiles archive written by an
+in-house writer from GDAL's MBTiles output and read back with the official
+client as a check, two MapLibre styles in the dashboard's own neutrals, and
+the vendored glyphs, packaged in `basemap/dist` for use outside this
+project. The archive needs a Range-capable host; Cloudflare Pages static
+assets are not one, which is why the parcels remain a tile directory and the
+basemap would go to R2.
+
+Measured on the 2026-11-01 build:
+
+| | |
+|---|--:|
+| staged features, twelve layers | 1,913,968 (buildings 857,698; address points 670,083; roads 257,659; water bodies 102,881) |
+| staging | 1 min |
+| tiling, GDAL MVT driver, z4 to z13 | 15 min |
+| tiles in the archive | 60,429 (60,370 unique; 59 duplicates share bytes) |
+| archive | 130 MB, gzip tiles, root directory 99 bytes + 15 leaf directories |
+| style layers per theme | 37 |
+| read-back with the official client, z4/7/10/13 over Bozeman, Billings and the state | 12 of 12 tiles non-empty |
+| dashboard smoke suite with the three basemap checks | 112 of 112 |
+
+The Bozeman z13 tile is 248 KB and the Billings z10 tile 295 KB, both well
+under the parcel layer's heaviest; buildings and address points are z13
+only and overzoom from there. Tippecanoe was not available in the session
+(building it from source was declined), so the low zooms are GDAL's own
+simplification; the data-side thinning (named streams, long rivers, dissolved
+major routes, water bodies by area, places by rank) stands in for its
+feature dropping.
 
 ## 17. Dedicated common areas are parcels that never climb the ladder
 
@@ -584,7 +668,8 @@ wrong.
 The dashboard is static files on Cloudflare Pages, so there is no server to
 render a PDF on, and a build-time batch (56 county profiles, a brief, an
 update, 28 periods) would be stale the moment someone wanted a period the
-batch did not cover. The five reports are therefore composed in the page from
+batch did not cover. The reports (five at first, six with the housing condition
+profile of section 19) are therefore composed in the page from
 the published tables (the same cubes the views read, with the county or
 period as an explicit argument instead of the map selection), laid out as a
 Letter document, and handed to the browser's print engine; "Save as PDF" is
@@ -647,3 +732,245 @@ context a reviewer needs; filled rows append to the overrides file unchanged,
 and rows with no action are ignored by `identity.load_overrides`. It covers
 the flagged holdings among the ten largest per county, because that is what
 is published; the complete queue is written locally by the identity stage.
+
+## 19. The DOR's building records witness the ladder, and CDU is empty
+
+Everything the dashboard says about development rested on two inferred columns
+of the parcel layer -- an assessed building value and a situs house number --
+and the only check between them was each other (a parcel with a house number
+carries a building value 89-91% of the time). The ORION CAMA database holds
+what the appraiser recorded for each dwelling, keyed on the same geocode: year
+built, physical condition, grade, the permits issued against the property and
+the date of the last inspection. Each refresh is a cross-section of three tax
+years, and three refreshes are on hand (see below), so stage 11
+(`timeseries/cama.py`) uses them as a **witness** to the series at every point
+they touch and as a **measure** of something the parcel layer never had. The
+first half of this section was written from the 2026 refresh alone and its
+figures are that refresh's; the series follows.
+
+### What the dictionary promises and what the refresh holds
+
+The DOR's data dictionary defines `CDU` as the composite rating of a dwelling's
+condition, desirability and utility. On this refresh it is populated on **138 of
+461,628** dwelling rows, in 2024 and 2025 as well, so it is not a lapse in one
+year's load. Its four components are populated on all but three rows:
+`PhyCondition`, `Utility`, `PropDesirability` and `LocDesirability`, each on the
+DOR's own scale -- Unsound (1), Very Poor (3), Poor (5), Fair (6), Average (7),
+Good (8), Very Good (9), Excellent (10). The components are what the appraisers
+maintain; the composite is a field the dictionary describes and the system does
+not fill. The published condition is `PhyCondition`, named as such everywhere
+it appears; CDU is exported and carried so that a refresh which fills it needs
+no code change, and the QA records how many rows carry it.
+
+The rating is live. Following single-dwelling properties from the 2024 to the
+2026 tax year (415,141 of them; `ResID` is re-keyed between years, so the
+property is the key), the year built changed on 683 and the condition on
+**32,473** -- 24,808 worsened, 7,659 improved. 383,637 dwellings carry an
+inspection date; 217,384 were inspected within five years, median 2021.
+
+### The join
+
+883,992 of 887,124 parcels (99.6%) match a 2026 property on the geocode. The
+107,792 properties with no parcel include 58,540 with a dwelling: 40,848
+"Improved Property" that are almost all *manufactured homes not attached to real
+property*, 13,799 condominium units, 1,622 dwellings on leased land. Those are
+DOR properties with their own geocodes that are not parcels; they are accounted
+and excluded, never counted as a miss. A parcel with several dwellings (16,012)
+reports its principal dwelling's condition (largest depreciated cost) and its
+earliest year built, which is what the ladder should have seen first.
+
+### The tests, each with a count on both sides
+
+Every figure is in `data/cama/qa_cama.json` and `meta.json`; the county table
+carries the same counts per county and the report prints them beside the
+statewide figure. 879,522 parcels tested (7,602 dedicated common areas left
+out, section 17).
+
+| test | result |
+|---|---|
+| **Improvement.** Parcel layer says built (value > 0) vs. ORION holds any dwelling, commercial or outbuilding record | agree on **99.64%**: 471,997 built in both, 404,382 vacant in both; 1,497 built per the layer with no DOR structure, 1,646 the reverse (32 of those with a dwelling) |
+| **Value.** The layer's `TotalBuildingValue` vs. `FinalVal.FinalBuilding`, tax year 2025 (the 2026 valuation is sparse until reappraisal closes: 65,298 rows against 980,495) | equal within one dollar on **870,485 of 872,624** parcels; 1,186 higher by 10% or more, 86 lower; the layer's value *is* the DOR's final value |
+| **House number.** The stage-1 signal vs. a recorded dwelling | P(dwelling \| house number) = **77.5%**, P(dwelling \| no house number) = 4.1%, P(house number \| dwelling) = 95.7%; 16,493 dwellings have no house number, 106,595 house numbers have no dwelling (outbuildings, commercial, and addresses assigned ahead of construction) |
+| **Timing.** For 98,508 dwellings built 2004-2025, the tax-year roll in which the ladder first showed a value, against the Y+1 roll a dwelling built in Y belongs to | **on time 68.6%** (67,550), one roll late 7.7%, two or more 6.2%, never **5**; 17.5% show a value *before* the year built, an earlier structure on the parcel. The address came before the year built on 33.5%: the E911 commitment the stage-1 reading assumes |
+| **Cohort dating.** Of lots created by a plat or a split that carry a dwelling, those whose dwelling is at least two years older than the lot | **24,672 of 75,990 (32.5%)**: a third of new lots with a house were split off *around* an existing house, and were "built" from the day they appeared. For condo units it is 70%, for first mappings 62% -- which is why the test is run by creation class and not on first appearance |
+| **Dormant.** The 43,743 lots under 40 acres the ladder holds at platted-only | **4** carry a dwelling, 80 any structure, 868 hold a new-dwelling permit. Of 42,393 addressed-not-built parcels, 18 carry a dwelling and 723 a structure |
+| **Permits.** 37,419 permits typed RESIDENTIAL, MANUFACTURED HOME or MODULAR, issued 2004-2024 on parcels the ladder had not called built | the ladder showed a value by the next roll on 67.3%, the second roll 18.7%, the third or later 6.2%, **never 7.7%** |
+| **Plausibility of the rating.** Share rated fair or worse by year built | pre-1900 35.6%, 1900-19 42.7%, 1920-39 36.2%, 1940-59 20.4%, 1960-79 14.8%, 1980-99 8.1%, 2000-09 2.7%, 2010-19 2.1%, 2020+ 1.5%; the DOR's own `PctGood` rises monotonically from 0.15 (unsound) to 0.96 (excellent) |
+
+### Which roll an export carries
+
+The timing test first produced spikes, not a distribution: dwellings built in
+2007 appeared two calendar years later and those built in 2009 one, with
+nothing in between. The cause is the export calendar, and it is a fact about
+every vintage, not about the ladder. A dwelling built in Y is assessed on 1
+January of Y+1 and belongs to the Y+1 roll; an export dated **January or
+February carries the previous year's values** (the 2017-01-30 export holds 2.8%
+of the dwellings built in 2016, the 2018-01-10 export 80%), while one dated
+July or later carries its own year's. The export's `TaxYear` label says
+otherwise -- 2017-01-30 is labelled 2017 -- and is a label, not the value
+block. `cama._roll_year` encodes the rule, the timing and permit tests are
+stated in rolls, and the series is then flat: on time between 57% and 78% in
+every year built from 2004 to 2025. The absorption curves in the Development
+view are measured in export dates and so run up to a year behind the roll;
+that is now said beside them.
+
+Three of these change how the other views should be read, and are now said
+there. The **ladder's "built" stage is confirmed** at the parcel, not inferred
+from a correlation: the two records disagree on 0.36% of parcels, and the value
+the layer carries is the appraiser's. The **dormant inventory is clean**: four
+dwellings among 43,743 lots. And the **absorption curves start a third full**:
+a lot split off around an existing house is counted as a created lot that was
+built at age zero, which is correct as a parcel event and misleading as a
+housing event; the cohort test gives the share per county, so a reader can
+discount it.
+
+What the witness cannot do is reach back. One refresh covers tax years
+2024-2026; the timing and permit tests look backward from a 2026 dwelling to
+the vintage the ladder first saw it, which is why they are stated for
+dwellings built 2004 onward and say nothing about demolitions.
+
+### Two earlier refreshes settle when CDU stopped being used
+
+Two vintage ORION exports (refreshed 2016-03-27, tax years 2014-2016; and
+2018-06-21, tax years 2016-2018) have the same 100-column `Res` schema as the
+2026 one and the same documentation (the 2012 data dictionary lists the same
+419 fields as the 2019 copy). In them the switch is visible to the year: for
+**tax year 2014, CDU is filled on 412,439 of 412,440 dwellings** and the
+physical-condition field on 55,374; for tax year 2015 and every year after,
+CDU is filled on a few dozen manufactured homes and the four components on all
+but a handful. The composite was retired at the 2015 reappraisal.
+
+It was retired by copying it into the components. On 377,942 single-dwelling
+properties rated in both years, the 2014 CDU equals the 2015 physical
+condition on 80.6%, the utility on 81.6%, the two desirabilities on 82.8% and
+82.5%, and all four at once on 73.1%; the disagreements are one step. In 2015
+the four components agree with one another on 80.8% of dwellings; by 2026 on
+46.2%, as appraisers have since rated them apart. So a condition series can be
+chained -- CDU for 2014, physical condition from 2015 -- with that seam named.
+
+The history is stable across refreshes: tax year 2016 as held by the 2016
+export and by the 2018 export carries the same rating on 383,486 of 385,614
+dwellings (99.4%), so the three exports can be joined into one series without
+a rating being rewritten under it. Over the series the stock has aged in the
+appraiser's eyes: of 364,630 single-family dwellings rated in both 2016 and
+2026, 67.7% hold the same rating, 23.0% rate worse and 9.3% better, and from
+the 2014 composite to the 2026 physical condition it is 58.6% / 29.0% / 12.4%.
+Year built changed on 1.1% in a decade. `PropertyID` persists: 915,503 of the
+995,226 properties of tax year 2016 are still present in 2026.
+
+### The series: eight points, and what moves between them
+
+Both vintages are exported to their own caches (`orion_cache_2016`,
+`orion_cache_2018`) and the stage reads every cache it finds, taking a tax
+year from the newest refresh that holds it and joining it to the parcel export
+that carries its roll. That gives 2014 (CDU), 2015-2018 and 2024-2026
+(physical condition), each point a full cross-section with the witness tests
+run against the ladder *as it stood at that export* -- the ladder history is
+censored at the point, so a 2016 test cannot know what the 2018 export showed.
+
+| tax year | export | rated | fair or worse | unsound + very poor | records agree | dormant lots with a dwelling | on time | new lots with an older dwelling |
+|---|---|--:|--:|--:|--:|--:|--:|--:|
+| 2014 | 2014-12-10 | 334,663 | 15.9% | 1.85% | 99.55% | 4 | 67.6% | 50.1% |
+| 2015 | 2016-01-12 | 338,086 | 16.4% | 1.77% | 99.58% | 160 | 67.9% | 48.7% |
+| 2016 | 2017-01-30 | 341,397 | 16.2% | 1.75% | 99.62% | 72 | 68.1% | 47.1% |
+| 2017 | 2018-01-10 | 346,000 | 16.4% | 1.69% | 99.52% | 37 | 68.3% | 45.4% |
+| 2018 | 2018-12-18 | 349,808 | 16.1% | 1.67% | 99.65% | 3 | 68.9% | 43.4% |
+| 2024 | 2024-12-31 | 377,221 | 14.8% | 1.51% | 99.66% | 5 | 68.9% | 34.3% |
+| 2025 | 2025-12-31 | 380,484 | 14.6% | 1.52% | 99.66% | 2 | 68.8% | 33.2% |
+| 2026 | 2026-09-04 | 383,822 | 14.5% | 1.53% | 99.64% | 4 | 68.6% | 32.5% |
+
+Three things the series shows that one point could not. **The witness holds
+at every point**: the parcel layer and the DOR agree on whether a parcel is
+built on 99.5-99.7% of parcels in every year, the building value equals the
+DOR's final value within a dollar on 99.5-99.98% of parcels in every year with
+a complete valuation table, a house number carries a dwelling 76.7-77.7% of
+the time, and the ladder saw a new dwelling on time 67.6-68.9% of the time.
+Those are not properties of the 2026 export; they are properties of the
+source. **The January exports show the roll lag directly**: the dormant lots
+that "carry a dwelling" number 160 at the 2016-01-12 export and 72 at
+2017-01-30, against 2 to 5 at every December export, because a January
+export still carries the previous roll while ORION's tax year already holds
+the houses built during the year. **The stock has improved in the appraiser's
+eyes**, from 15.9% rated fair or worse in 2014 to 14.5% in 2026, with 49,000
+more rated dwellings; the improvement sits between 2018 and 2024.
+
+Followed dwelling by dwelling (single-dwelling properties present at both
+ends of each interval, through `PropertyID`), the re-ratings cluster on the
+DOR's two-year reappraisal cycle:
+
+| interval | followed | same | worse | better |
+|---|--:|--:|--:|--:|
+| 2014 → 2015 (CDU → physical condition, 2015 reappraisal) | 318,969 | 80.5% | 11.6% | 7.8% |
+| 2015 → 2016 | 322,558 | 98.5% | 0.9% | 0.6% |
+| 2016 → 2017 (2017 reappraisal) | 325,504 | 90.3% | 7.1% | 2.6% |
+| 2017 → 2018 | 330,646 | 97.7% | 1.2% | 1.2% |
+| 2018 → 2024 (three reappraisals) | 328,413 | 79.4% | 13.8% | 6.8% |
+| 2024 → 2025 (2025 reappraisal) | 359,607 | 93.9% | 4.8% | 1.3% |
+| 2025 → 2026 | 363,849 | 98.3% | 1.1% | 0.6% |
+
+In an off year under two percent of dwellings are re-rated; in a reappraisal
+year six to ten percent are, and twice as many down as up. The seam interval
+is the largest because the copy and the 2015 reappraisal fall in it together.
+Year built changes on 0.05-0.1% of followed dwellings per interval, and on
+1,831 across the six-year gap.
+
+The vintages also carry the ownership tables the identity stage bridges on,
+which would extend the ORION party bridge to the 2016-2018 snapshots. That is
+not built.
+
+### Published as a measure
+
+The condition and year built go three places, every table keyed on the
+snapshot index `s` of the export that carries the point: the parcel tiles
+(`cd` 0-7, `yb`, the newest point; a parcel with no dwelling carries -1 / 0),
+`cama_township` and `cama_county` (condition and year-built class counts, with
+the witness counts beside them at county grain and the six that are
+meaningful at township grain), `cama_timing` and `cama_condition_decade` for
+the two charts, and `cama_transitions` for the point-to-point re-ratings. The
+Condition view follows the time slider to the nearest point at or before the
+vintage shown and names it; the parcels/acres toggle stays off because the
+unit is the dwelling. The map draws condition and age together as a bivariate
+grid (2026-11-01, replacing an eight-step brown ramp whose shades could not be
+told apart): the share of rated dwellings fair or worse across, the share built
+before 1980 up, each cut at thirds of the units shown at township and county
+grain, and fixed classes on the parcels (fair or worse / average / good or
+better by before 1980 / 1980 to 2004 / 2005 on). Condition takes the palette's
+red, age its blue, the blends plum and violet; the nine cells were searched
+jointly so that every pair, and every cell against the grey mask, is as far
+apart as the gamut allows (OKLab dE x100, checked under normal, protan, deutan
+and tritan vision; the standard Stevens bivariate schemes bottom out at 7 to 9
+between cells). The housing condition report leads with the newest point
+and carries the series and the transitions in their own section. Statewide, 383,822 rated
+dwellings on parcels: 2,390 unsound, 3,469 very poor, 9,248 poor, 40,417 fair,
+168,254 average, 115,741 good, 35,749 very good, 8,554 excellent; 24,341 are
+manufactured homes on their own parcel.
+
+### The Structures Framework's address points witness the address rung
+
+The ladder's middle rung is a situs house number in the parcel layer. The
+State Library's Structures Framework is a third record of the same fact:
+address points assigned by local governments (NENA v2, monthly), placed on
+the structure itself for 93% of points, each carrying the DOR geocode the
+local government recorded. Stage 12 joins the 2026-10-30 export (674,730
+points; 663,209 on a parcel) to the newest parcel export twice, by
+containment and by that stated geocode, and tests:
+
+| test | result |
+|---|---|
+| house number vs a numbered point on the parcel | agree on 92.1% of 879,522 parcels; P(point \| house number) 93.2%, P(house number \| point) 92.4%; 32,062 house numbers with no point, 36,577 points on parcels without one |
+| DOR dwelling vs a residential point (MT_PlcType 101-103, 106, 107 or Place_Type residence) | P(residential point \| dwelling) 93.8%; 23,749 dwellings without one, 13,335 of them with no point at all; 29,720 residential points on parcels with no dwelling on record |
+| the point's stated geocode vs the parcel that contains it | 625,692 of 635,927 testable points agree (98.7%); 8,394 name another parcel; 9,678 stated geocodes are not in the export; Gallatin agrees on 86.5%, the lowest of the large counties |
+| DOR dwelling count vs unit points | 15,845 parcels hold two or more dwellings and 486 carry points with a unit; apartments are one point |
+| DOR manufactured home vs a mobile-home point (107) | 10,659 of 24,341 DOR manufactured homes have one; 2,499 points without a DOR record |
+| placement | 93.4% on the structure, 3.2% property access, 1.5% geocoded, 1.7% unknown; one county places 1.5% on the structure |
+
+County agreement on the address rung runs from 46% to 99% (median 90%), and
+the residential-point share from 60% to 99%, so the witness is as good as the
+county's addressing programme: where it is weak, the parcel layer's house
+number is the better record, and where it is strong, the two disagree on a
+few percent of parcels that are worth a look. The counts are published per
+county and township in `cama_county` and `cama_township` (`addr_*`), shown
+in the Condition view's witness tiles and the housing condition report, and
+`qa_structures.json` holds the geocode, unit, manufactured-home and
+placement tests. The framework has no history, so only the newest point of
+the series carries the test.

@@ -28,9 +28,10 @@ zoom below that, which is the view where an aggregate is the honest answer.
 
 **Roads and buildings ride in the same tiles.** The file cap rules out a
 second pyramid (roads are in every tile), so ``reference.py`` stages the MDT
-road centerlines and the lidar building footprints as two more layers of the
-same tileset, through a VRT that unites the three FlatGeobufs. They cost
-bytes, not files.
+road centerlines and the building footprints (Microsoft's 2018 statewide set
+merged with the State Library's lidar footprints, each tagged by source) as
+two more layers of the same tileset, through a VRT that unites the three
+FlatGeobufs. They cost bytes, not files.
 
 **Tiles are stored decompressed.** GDAL's MVT driver gzips tile bodies by
 default, which requires a ``Content-Encoding: gzip`` response header. Cloudflare
@@ -46,8 +47,10 @@ only ones where that matters and they are a tenth of their disk size gzipped.
 stage publishes parcel geometry and the geocode. The geocode is the DOR's own
 public key -- it is what the state's Cadastral application searches on -- and the
 boundary is already published by MSL. No owner name, mailing address, city or
-value reaches a tile: the attributes are the geocode plus seven small derived
-codes, and the popup says so. MCA 2-6-1017 concerns distribution lists, which
+value reaches a tile: the attributes are the geocode plus a dozen small derived
+codes (the ladder stage, first vintage, acres, tenure, locality, holding size
+and rank, and from stage 11 the dwelling's condition class and year built), and
+the popup says so. MCA 2-6-1017 concerns distribution lists, which
 this is not, and the non-disclosure that matters is kept by what is withheld, not
 by withholding the map.
 """
@@ -79,6 +82,7 @@ SNAP_DIR = "data/snapshots"
 EVENT_DIR = "data/events"
 PL_DIR = "data/publiclands"
 RES_DIR = "data/reservations"
+CAMA_DIR = "data/cama"
 OUT_DIR = "site/public/data/parcels"
 WORK_DIR = "data/_tiles"
 
@@ -92,7 +96,8 @@ FILE_CAP = 20_000     # Cloudflare Pages deployment limit
 # never invent a finding: undeveloped, unknown vintage, private, most-distant
 # owner locality.
 DEFAULTS = (("dev", 0), ("born", -1), ("ac", 0.0), ("ten", 2), ("loc", 4),
-            ("res", 0), ("cnd", 0), ("hs", -1), ("hr", 0), ("hp", 0))
+            ("res", 0), ("cnd", 0), ("hs", -1), ("hr", 0), ("hp", 0),
+            ("cd", -1), ("yb", 0))
 
 
 def build_source(date: str, path: str) -> gpd.GeoDataFrame:
@@ -173,6 +178,23 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
     else:
         log.warning("no identity output for %s; holding attributes default", date)
 
+    # The DOR's building record (stage 11): the principal dwelling's physical
+    # condition as an ordinal 0-7 and the earliest year built on the parcel.
+    # One cross-section, so neither follows the time slider. A parcel without
+    # a dwelling carries -1 / 0, the "nothing recorded" values.
+    cd = pd.Series(-1, index=p.index, dtype="int8")
+    yb = pd.Series(0, index=p.index, dtype="int16")
+    cama_path = f"{CAMA_DIR}/parcels_cama_{date}.parquet"
+    if os.path.exists(cama_path):
+        cm = pd.read_parquet(cama_path, columns=["parcel_id", "cond", "yb_res", "has_dwelling"])
+        cm = cm[cm["has_dwelling"]].set_index("parcel_id")
+        cd = pd.Series(p["parcel_id"].map(cm["cond"]).fillna(-1).to_numpy().astype("int8"), index=p.index)
+        yb = pd.Series(p["parcel_id"].map(cm["yb_res"]).fillna(0).to_numpy().astype("int16"), index=p.index)
+        log.info("building records joined: %s parcels with a rated dwelling, %s with a year built",
+                 f"{int((cd >= 0).sum()):,}", f"{int((yb > 0).sum()):,}")
+    else:
+        log.warning("no CAMA frame for %s; condition and year built default", date)
+
     attrs = pd.DataFrame({
         "parcel_id": p["parcel_id"],
         "hs": hs,                                              # holding size class, -1 not private
@@ -185,6 +207,8 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
         "loc": loc.astype("int8"),                              # absentee gradient 0-4
         "res": p["in_reservation"].astype("int8"),
         "cnd": p["is_condo"].fillna(False).astype("int8"),
+        "cd": cd,                                               # dwelling condition 0-7, -1 none
+        "yb": yb,                                               # earliest year built, 0 none
     })
     m = g[["pid", "geometry"]].merge(attrs, left_on="pid", right_on="parcel_id",
                                      how="left")
@@ -371,7 +395,8 @@ def build(date: str | None = None, out_dir: str = OUT_DIR,
         n_source = _tile_features(src_path)
     else:
         n_source = len(build_source(date, src_path))
-    ref = reference.stage(WORK_DIR, reuse=reuse_source)
+    ref = reference.stage(WORK_DIR, reuse=reuse_source, parcels=src_path,
+                          cama=f"{CAMA_DIR}/parcels_cama_{date}.parquet")
     vrt = write_vrt(f"{WORK_DIR}/tiles.vrt", {"parcels": src_path, **ref})
     tile(vrt, out_dir, LAYER_ZOOMS)
     trim_low_zooms(out_dir)

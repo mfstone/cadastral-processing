@@ -1,8 +1,9 @@
 /* ---------------------------------------------------------------------------
    app.js -- views, filters and wiring.
 
-   Five views, each answering one of the planning questions the pipeline
-   supports, over one shared map surface and one shared time control.
+   Eight views, each answering one of the planning questions the pipeline
+   supports, over one shared map surface and one shared time control, plus
+   the Reports and About tabs.
 
    An honest limitation is built into the controls. The published tables carry
    MARGINALS at township grain, not the full joint cube -- the joint at that
@@ -73,6 +74,59 @@ const snapLabels = () => S.dim.snapshots.map((s) => s.date.slice(0, 7));
 const ivLabels = () => S.dim.intervals.map((i) => S.dim.snapshots[i.a].date.slice(2, 7) + '→' + S.dim.snapshots[i.b].date.slice(2, 7));
 
 /* ----------------------------------------------------------------- painting */
+/* ------------------------------------------------------- bivariate paint */
+/*
+   The Condition view draws two measures at once: condition across and age
+   up, nine colours from the --bv-<condition><age> tokens. Units are cut at
+   thirds of the units shown at the point (the same quantile rule the single
+   ramps use), parcels at fixed classes; the legend is the grid itself with
+   the cuts written out, and every cell names its pair on hover.
+*/
+const bvTok = (i, j) => cssVar(`--bv-${i}${j}`);
+function bivariateLegendHTML({ title, x, y, note }) {
+  const cells = [];
+  for (let j = 3; j >= 1; j--) {
+    for (let i = 1; i <= 3; i++) cells.push(`<i style="background:${bvTok(i, j)}" title="${x.classes[i - 1]} · ${y.classes[j - 1]}"></i>`);
+  }
+  return `<div class="title">${title}</div>
+    <div class="bv"><div class="ylab">${y.label}</div><div class="grid">${cells.join('')}</div>
+    <div></div><div class="xlab">${x.label}</div></div>
+    <div class="note">Across, ${x.name}: ${x.classes.join(' · ')}. Up, ${y.name}: ${y.classes.join(' · ')}.${note ? ` ${note}` : ''}</div>`;
+}
+function paintBivariate(c, ids, fx, fy, { x, y, note = '' }) {
+  const xs = new Map(), ys = new Map();
+  const noValue = [];
+  for (const u of ids) {
+    const vx = fx(c, u, S.snap), vy = fy(c, u, S.snap);
+    if (vx != null && isFinite(vx) && vy != null && isFinite(vy)) { xs.set(u, vx); ys.set(u, vy); }
+    else noValue.push(u);
+  }
+  const masked = cssVar('--masked');
+  const colors = new Map();
+  for (const u of noValue) {
+    const fid = unitFeatureId(u);
+    if (fid != null) colors.set(fid, masked);
+  }
+  const bx = quantileBreaks(xs.values(), 3), by = quantileBreaks(ys.values(), 3);
+  for (const [u, vx] of xs) {
+    const fid = unitFeatureId(u);
+    if (fid == null) continue;
+    colors.set(fid, bvTok(Math.min(2, classify(vx, bx)) + 1, Math.min(2, classify(ys.get(u), by)) + 1));
+  }
+  const f = (v) => C.fmtPct(v, 0);
+  const classes = (b) => (b.length < 2 ? ['low', 'middle', 'high'] : [`under ${f(b[0])}`, `${f(b[0])} to ${f(b[1])}`, `${f(b[1])} and over`]);
+  const l = $('legend');
+  if (S.map && S.map.zoom >= 10.5 && $('lyr-parcels')?.checked && parcelLegendHTML()) {
+    l.innerHTML = parcelLegendHTML(); l.dataset.mode = 'parcel';
+  } else {
+    l.dataset.mode = '';
+    l.innerHTML = bivariateLegendHTML({ title: l.dataset.title || '', x: { ...x, classes: classes(bx) },
+      y: { ...y, classes: classes(by) }, note: `Classes are thirds of the units shown. ${note}`.trim() });
+  }
+  S.map.paint(colors);
+  applyParcelStyle();
+}
+
 function paintFrom(c, ids, fn, { diverging = false, maskFn = null } = {}) {
   const vals = new Map();
   const noValue = [];
@@ -128,11 +182,17 @@ const fmtShort = (v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
  *  township metric's ramp is no longer what the reader is looking at. */
 function parcelLegendHTML() {
   const items = PARCEL_LEGEND[S.view] || [];
-  if (!items.length) return '';
+  if (!items.length && S.view !== 'condition') return '';
   const when = S.dim.snapshots[S.snap]?.date || 'the selected vintage';
-  return `<div class="title">Parcels &mdash; ${VIEWS[S.view].parcelLegend || 'colour key'}</div>`
-    + items.map(([label, tok]) =>
-        `<div class="pl"><i style="background:${cssVar('--' + tok)}"></i>${label}</div>`).join('')
+  const title = `Parcels &mdash; ${VIEWS[S.view].parcelLegend || 'colour key'}`;
+  const head = S.view === 'condition'
+    ? bivariateLegendHTML({ title, x: { label: 'poorer condition \u2192', name: 'DOR condition rating',
+        classes: ['good or better (8 to 10)', 'average (7)', 'fair or worse (1 to 6)'] },
+      y: { label: 'older \u2192', name: 'year built', classes: ['2005 on', '1980 to 2004', 'before 1980'] } })
+      + `<div class="pl"><i style="background:${cssVar('--masked')}"></i>no dwelling on record</div>`
+    : `<div class="title">${title}</div>`
+      + items.map(([label, tok]) => `<div class="pl"><i style="background:${cssVar('--' + tok)}"></i>${label}</div>`).join('');
+  return head
     // The one thing on the parcel map that follows the slider: an outline on
     // the parcels that did not exist in the previous vintage.
     + `<div class="pl"><i class="ol" style="border-color:${cssVar('--created')}"></i>`
@@ -264,6 +324,20 @@ function parcelStyle() {
         ['==', ['coalesce', ['get', 'ten'], 2], 0], cssVar('--public-land'),
         ['==', ['coalesce', ['get', 'ten'], 2], 1], cssVar('--cat-2'),
         masked], null];
+    case 'condition': {
+      // The DOR's rating across (good or better, average, fair or worse) and the
+      // year built up (2005 on, 1980 to 2004, before 1980): the nine cells of the
+      // unit map in fixed classes. `cd` is the ordinal 0-7 of the eight classes
+      // the DOR uses, 0-3 being fair (6) or worse and 4 average (7).
+      const cd = ['coalesce', ['get', 'cd'], -1];
+      const yb = ['coalesce', ['get', 'yb'], 0];
+      const ci = ['case', ['<=', cd, 3], 3, ['==', cd, 4], 2, 1];
+      const aj = ['case', ['<', yb, 1980], 3, ['<', yb, 2005], 2, 1];
+      const cells = [];
+      for (let i = 1; i <= 3; i++) for (let j = 1; j <= 3; j++) cells.push(i * 10 + j, bvTok(i, j));
+      return [['case', ['any', ['<', cd, 0], ['<=', yb, 0]], masked,
+        ['match', ['+', ['*', ci, 10], aj], ...cells, masked]], null];
+    }
     case 'thresholds':
       // The 20-acre statutory line, drawn on the parcels themselves.
       return [['step', ['get', 'ac'],
@@ -382,6 +456,308 @@ VIEWS.ladder = {
   },
 };
 
+/* ------------------------------------------------------------ condition */
+/*
+   1b. Condition of the housing stock, and the DOR's building records as a
+   witness to the ladder (stage 11, timeseries/cama.py).
+
+   Eight points rather than a continuous series: three ORION refreshes,
+   each tax year joined to the parcel export that carries its roll -- tax
+   years 2014, 2015-2018 and 2024-2026. The time slider selects the nearest
+   point at or before the vintage shown, and every card names it. The
+   parcels/acres toggle does not apply: the unit is the dwelling. The rating
+   is CDU, the composite, through 2014 and the DOR's physical-condition
+   component from 2015, when the composite was retired by copying it into
+   its components; each point names its field.
+*/
+const num = (v) => (typeof v === 'bigint' ? Number(v) : Number(v ?? 0));
+const CD_COLS = [...Array(8).keys()].map((i) => `n_cd${i}`);
+const YB_COLS = [...Array(9).keys()].map((i) => `n_yb${i}`);
+const WITNESS_TWP = ['parcels_tested', 'improved_layer', 'struct_dor', 'agree_built', 'layer_only', 'dor_only',
+  'addr_tested', 'addr_hn_pt', 'addr_hn_nopt', 'addr_dw_res', 'addr_dw_nores'];
+const WITNESS_CTY = [...WITNESS_TWP, 'addr_pt_nohn', 'addr_res_nodw', 'hn_dwell', 'hn_nodwell', 'nohn_dwell', 'dormant_lt40', 'dormant_dwell',
+  'dormant_struct', 'dormant_permit', 'stage1', 'stage1_dwell', 'timing_n', 'timing_never', 'timing_ontime',
+  'born_dwell', 'born_older', 'insp_recent', 'value_n', 'value_equal'];
+const shortCond = (l) => String(l).replace(/ \(\d+\)/, '');
+const ratedOf = (o) => CD_COLS.reduce((a, n) => a + (o[n] || 0), 0);
+const belowShare = (o) => { const r = ratedOf(o); return r ? (100 * (o.n_cd0 + o.n_cd1 + o.n_cd2 + o.n_cd3)) / r : NaN; };
+const pre1980Share = (o) => { const t = YB_COLS.reduce((a, n) => a + (o[n] || 0), 0); return t ? (100 * (o.n_yb0 + o.n_yb1 + o.n_yb2 + o.n_yb3 + o.n_yb4)) / t : NaN; };
+const pctOf = (n, d) => (d ? (100 * n) / d : NaN);
+
+async function camaTables() {
+  if (S.cama) return S.cama;
+  const [twp, cty, tim, cbd, tr] = await Promise.all([
+    loadTable('cama_township'), loadTable('cama_county'), loadTable('cama_timing'),
+    loadTable('cama_condition_decade'), loadTable('cama_transitions')]);
+  const si = cty.columns.indexOf('s');
+  const points = [...new Set(cty.rows.map((r) => num(r[si])))].sort((a, b) => a - b);
+  // One Map of unit -> row per point: small, and the slider only ever asks for one point.
+  const byPoint = (t, key) => {
+    const k = t.columns.indexOf(key), s = t.columns.indexOf('s');
+    const maps = new Map(points.map((p) => [p, new Map()]));
+    for (const r of t.rows) maps.get(num(r[s]))?.set(num(r[k]), r);
+    return maps;
+  };
+  S.cama = { twp, cty, tim, cbd, tr, points, twpBy: byPoint(twp, 'u'), ctyBy: byPoint(cty, 'county_n') };
+  return S.cama;
+}
+/** The series point at or before a snapshot index, else the first. */
+const pointAt = (T, snap) => { let p = T.points[0]; for (const s of T.points) if (s <= snap) p = s; return p; };
+const pointMeta = (s) => (S.meta.cama?.points || []).find((p) => p.s === s) || {};
+const taxYearOf = (s) => pointMeta(s).tax_year ?? s;
+/** Sum the named columns of table `t` over the rows keyed by `units`. */
+function camaSum(t, byMap, units, names) {
+  const out = {};
+  const ci = names.map((n) => t.columns.indexOf(n));
+  for (const n of names) out[n] = 0;
+  if (!byMap) return out;
+  for (const u of units) {
+    const r = byMap.get(u);
+    if (!r) continue;
+    names.forEach((n, i) => { if (ci[i] >= 0) out[n] += num(r[ci[i]]); });
+  }
+  return out;
+}
+/** Condition x year-built-bin counts at one point, summed over county rows (0 = statewide). */
+function condByDecade(T, counties, s) {
+  const c = (n) => T.cbd.columns.indexOf(n);
+  const ki = c('county_n'), bi = c('yb_bin'), di = c('cond'), ni = c('dwellings'), si = c('s');
+  const want = new Set(counties);
+  const grid = [...Array(8)].map(() => new Float64Array(9));
+  for (const r of T.cbd.rows) {
+    if (num(r[si]) !== s || !want.has(num(r[ki]))) continue;
+    grid[num(r[di])][num(r[bi])] += num(r[ni]);
+  }
+  return grid;
+}
+/** Year-built cohort x ladder lag at one point, summed over county rows (0 = statewide). */
+function timingSeries(T, counties, s) {
+  const c = (n) => T.tim.columns.indexOf(n);
+  const ki = c('county_n'), yi = c('yb'), si = c('s');
+  const want = new Set(counties);
+  const names = ['earlier', 'on_time', 'late1', 'late2plus', 'never'];
+  const by = new Map();
+  for (const r of T.tim.rows) {
+    if (num(r[si]) !== s || !want.has(num(r[ki]))) continue;
+    const y = num(r[yi]);
+    if (!by.has(y)) by.set(y, Object.fromEntries(names.map((n) => [n, 0])));
+    const o = by.get(y);
+    for (const n of names) o[n] += num(r[c(n)]);
+  }
+  const years = [...by.keys()].sort((a, b) => a - b);
+  return { years, series: names.map((n) => years.map((y) => by.get(y)[n])) };
+}
+/** Point-to-point transitions summed over county rows (0 = statewide). */
+function transitionSeries(T, counties) {
+  const c = (n) => T.tr.columns.indexOf(n);
+  const want = new Set(counties);
+  const by = new Map();
+  for (const r of T.tr.rows) {
+    if (!want.has(num(r[c('county_n')]))) continue;
+    const key = `${num(r[c('s_from')])}>${num(r[c('s')])}`;
+    if (!by.has(key)) by.set(key, { from: num(r[c('s_from')]), to: num(r[c('s')]), n: 0, same: 0, worse: 0, better: 0, worse2plus: 0, better2plus: 0 });
+    const o = by.get(key);
+    for (const k of ['n', 'same', 'worse', 'better', 'worse2plus', 'better2plus']) o[k] += num(r[c(k)]);
+  }
+  return [...by.values()].sort((a, b) => a.to - b.to);
+}
+function witnessTiles(host, w, { full, statewide }) {
+  const vacantBoth = w.parcels_tested - w.improved_layer - w.dor_only;
+  const agree = pctOf(w.agree_built + vacantBoth, w.parcels_tested);
+  const sw = statewide ? ` · statewide ${C.fmtPct(pctOf(statewide.agree_built + statewide.parcels_tested - statewide.improved_layer - statewide.dor_only, statewide.parcels_tested))}` : '';
+  const items = [
+    { value: C.fmtPct(agree), label: 'parcels where the two records agree',
+      detail: `${C.fmtInt(w.parcels_tested)} parcels tested${sw}` },
+    { value: C.fmtInt(w.layer_only), label: 'built per the parcel layer, no DOR structure',
+      detail: `${C.fmtPct(pctOf(w.layer_only, w.improved_layer))} of parcels with a building value` },
+    { value: C.fmtInt(w.dor_only), label: 'DOR structure, parcel layer unimproved',
+      detail: `${C.fmtPct(pctOf(w.dor_only, w.struct_dor))} of parcels with a DOR structure` },
+  ];
+  if (w.addr_tested > 0) {
+    // Stage 12: the Structures Framework's address points, newest export only.
+    items.push(
+      { value: C.fmtPct(pctOf(w.addr_hn_pt, w.addr_hn_pt + w.addr_hn_nopt)), label: 'house numbers with an address point on the parcel',
+        detail: `Structures Framework · ${C.fmtInt(w.addr_hn_nopt)} house numbers with no point` },
+      { value: C.fmtPct(pctOf(w.addr_dw_res, w.addr_dw_res + w.addr_dw_nores)), label: 'dwellings on record with a residential address point',
+        detail: `${C.fmtInt(w.addr_dw_nores)} dwellings without one` });
+  }
+  if (full) {
+    items.push(
+      { value: C.fmtInt(w.dormant_dwell), label: 'dormant lots that carry a dwelling',
+        detail: `of ${C.fmtInt(w.dormant_lt40)} lots under 40 ac the ladder holds at platted only` },
+      { value: C.fmtInt(w.stage1_dwell), label: 'addressed, not built — but a dwelling on record',
+        detail: `of ${C.fmtInt(w.stage1)} parcels at the addressed stage` },
+      { value: C.fmtPct(pctOf(w.timing_ontime, w.timing_n)), label: 'dwellings built 2004+ on the ladder by the first export that could carry them',
+        detail: `${C.fmtInt(w.timing_never)} of ${C.fmtInt(w.timing_n)} never seen` },
+      { value: C.fmtPct(pctOf(w.born_older, w.born_dwell)), label: 'new lots whose dwelling is older than the lot',
+        detail: `${C.fmtInt(w.born_older)} of ${C.fmtInt(w.born_dwell)} lots first seen in the series` },
+      { value: C.fmtPct(pctOf(w.value_equal, w.value_n)), label: 'building values equal to the DOR final value',
+        detail: w.value_n ? `within one dollar · ${C.fmtInt(w.value_n)} parcels` : 'valuation table incomplete for this tax year' },
+      { value: C.fmtPct(pctOf(w.hn_dwell, w.hn_dwell + w.hn_nodwell)), label: 'house numbers that carry a dwelling',
+        detail: `${C.fmtInt(w.nohn_dwell)} dwellings without a house number` },
+    );
+  }
+  C.stats(host, items);
+}
+
+VIEWS.condition = {
+  parcelLegend: 'dwelling condition and year built, DOR records (newest point)',
+  label: 'Condition',
+  legend: 'Condition and age of the housing stock',
+  async render(panel) {
+    const T = await camaTables();
+    const L = S.dim.labels.condition || [];
+    const YBL = S.dim.labels.year_built || [];
+    const cm = S.meta.cama || {};
+    const s = pointAt(T, S.snap);
+    const pm = pointMeta(s);
+    const ty = pm.tax_year ?? cm.tax_year;
+    const pointDate = S.dim.snapshots[s]?.date ?? '';
+    const slipped = S.snap !== s;
+    const ptsTxt = T.points.map(taxYearOf).join(', ');
+    const twpLevel = S.level === 'township';
+    const tbl = twpLevel ? T.twp : T.cty;
+    const byMaps = twpLevel ? T.twpBy : T.ctyBy;
+    const byMap = byMaps.get(s);
+    const ids = twpLevel ? twpIds() : countyIds();
+    const cdIdx = CD_COLS.map((n) => tbl.columns.indexOf(n));
+
+    // The map: the share of rated dwellings fair or worse across and the share
+    // built before 1980 up, at the point, masked under 25 rated. The mask here
+    // is a count floor, not the coverage gate, and the legend must say so.
+    const ybIdx = YB_COLS.map((n) => tbl.columns.indexOf(n));
+    const rowOf = (u) => {
+      const r = byMap?.get(u);
+      if (!r) return null;
+      const o = {};
+      CD_COLS.forEach((n, i) => { o[n] = num(r[cdIdx[i]]); });
+      YB_COLS.forEach((n, i) => { o[n] = num(r[ybIdx[i]]); });
+      return ratedOf(o) >= 25 ? o : null;
+    };
+    paintBivariate(T, ids, (_t, u) => { const o = rowOf(u); return o ? belowShare(o) : null; },
+      (_t, u) => { const o = rowOf(u); return o ? pre1980Share(o) : null; },
+      { x: { label: 'poorer condition \u2192', name: 'share of rated dwellings fair or worse' },
+        y: { label: 'older \u2192', name: 'share built before 1980' },
+        note: `Tax year ${ty}, from the ${pointDate} export. Grey = fewer than 25 rated dwellings, or none on record.` });
+
+    const sel = selectedUnits();
+    const src = sel ? { t: tbl, m: byMaps, u: sel } : { t: T.cty, m: T.ctyBy, u: [0] };
+    const base = camaSum(src.t, src.m.get(s), src.u, ['dwellings', 'rated', 'mh', 'condo_th', 'partial', ...CD_COLS, ...YB_COLS]);
+    const stw = camaSum(T.cty, T.ctyBy.get(s), [0], ['dwellings', 'rated', 'mh', ...CD_COLS, ...YB_COLS]);
+    const one = src.u.length === 1 ? src.m.get(s)?.get(src.u[0]) : null;
+    const medYb = one ? num(one[src.t.columns.indexOf('yb_median')]) : NaN;
+    const field = pm.rating_field === 'CDU' ? 'CDU, the composite rating' : 'the physical-condition rating';
+
+    C.stats(C.card(panel, `Dwellings on record, tax year ${ty}`, `${selectionNote().replace(/\.?$/, '.')} `
+      + `From the ${pointDate} export (ORION refresh ${pm.refresh_date || 'n/a'}); the rating is ${field}. `
+      + (slipped
+        ? `The slider is at ${S.dim.snapshots[S.snap]?.date}; building records exist for tax years ${ptsTxt}, and the nearest earlier point is shown.`
+        : `Building records exist for tax years ${ptsTxt}.`)), [
+      { value: C.fmtInt(base.dwellings), label: 'parcels with a dwelling', detail: `${C.fmtInt(base.rated)} rated` },
+      { value: C.fmtPct(belowShare(base)), label: 'rated fair or worse', detail: `statewide ${C.fmtPct(belowShare(stw))}` },
+      { value: C.fmtInt(base.n_cd0 + base.n_cd1), label: 'unsound or very poor',
+        detail: `${C.fmtPct(pctOf(base.n_cd0 + base.n_cd1, ratedOf(base)))} of rated` },
+      { value: isFinite(medYb) && medYb > 0 ? String(Math.round(medYb)) : '--', label: 'median year built',
+        detail: `${C.fmtPct(pre1980Share(base))} built before 1980` },
+      { value: C.fmtPct(pctOf(base.mh, base.dwellings)), label: 'manufactured homes',
+        detail: `${C.fmtInt(base.partial)} partly complete` },
+    ]);
+
+    const seq = C.ramp('seq', 8).slice().reverse();
+    const k1 = C.card(panel, 'Condition of the principal dwelling',
+      'The DOR’s rating on its own scale, Unsound (1) to Excellent (10). Through tax year 2014 the DOR filled CDU, '
+      + 'the composite of condition, desirability and utility; at the 2015 reappraisal it retired the composite by '
+      + 'copying it into four components and has rated them apart since. The physical-condition component is shown from 2015.');
+    C.histogram(k1, { values: CD_COLS.map((n) => base[n]), xLabels: L.map(shortCond), xTickEvery: 1,
+      color: cssVar('--cat-1'), caption: `Dwellings by condition class, tax year ${ty}` });
+    C.table(k1, { headers: ['condition', 'dwellings', 'share', 'statewide'],
+      rows: CD_COLS.map((n, i) => [L[i], C.fmtInt(base[n]), C.fmtPct(pctOf(base[n], ratedOf(base))), C.fmtPct(pctOf(stw[n], ratedOf(stw)))]),
+      caption: 'Condition classes, selection against statewide' });
+
+    // ---- the series
+    const xl = T.points.map((p) => String(taxYearOf(p)));
+    const ser = T.points.map((p) => camaSum(src.t, src.m.get(p), src.u, CD_COLS));
+    const serSt = T.points.map((p) => camaSum(T.cty, T.ctyBy.get(p), [0], CD_COLS));
+    const kS = C.card(panel, 'Condition over the series',
+      'Every point the three refreshes give: tax years 2014, 2015 to 2018 and 2024 to 2026. The 2014 point is the '
+      + 'composite CDU and the rest the physical-condition component it was copied into, so the seam is a change of '
+      + 'field, not of housing. No refresh is on hand between 2018 and 2024.');
+    C.stackedArea(kS, { series: CD_COLS.map((n) => ser.map((o) => o[n])), labels: L.map(shortCond), colors: seq,
+      xLabels: xl, share: true, xTickEvery: 1, caption: 'Condition composition by tax year' });
+    C.lineChart(kS, { series: [ser.map(belowShare), serSt.map(belowShare)], labels: ['selection', 'Montana'],
+      colors: [cssVar('--cat-1'), cssVar('--cat-3')], xLabels: xl, fmt: (v) => C.fmtPct(v), xTickEvery: 1,
+      caption: 'Share rated fair or worse, by tax year' });
+
+    const counties = !twpLevel && sel ? sel : [0];
+    const trs = transitionSeries(T, counties);
+    if (trs.length) {
+      const kT = C.card(panel, 'The same dwellings, point to point',
+        (twpLevel && sel ? 'Statewide: transitions are published at county grain. ' : '')
+        + 'Single-dwelling properties rated at both ends of each interval, followed by the DOR’s property id. '
+        + '“Worse” and “better” are any step on the scale; the first interval crosses the change of field.');
+      const xt = trs.map((t) => `${taxYearOf(t.from)}→${String(taxYearOf(t.to)).slice(2)}`);
+      C.lineChart(kT, { series: [trs.map((t) => pctOf(t.worse, t.n)), trs.map((t) => pctOf(t.better, t.n))],
+        labels: ['rated worse', 'rated better'], colors: [cssVar('--statute'), cssVar('--cat-1')], xLabels: xt,
+        fmt: (v) => C.fmtPct(v), xTickEvery: 1, caption: 'Share of followed dwellings re-rated, by interval' });
+      C.table(kT, { headers: ['interval', 'dwellings followed', 'same', 'worse', 'better', 'two or more steps worse'],
+        rows: trs.map((t, i) => [xt[i], C.fmtInt(t.n), C.fmtPct(pctOf(t.same, t.n)), C.fmtPct(pctOf(t.worse, t.n)),
+          C.fmtPct(pctOf(t.better, t.n)), C.fmtPct(pctOf(t.worse2plus, t.n))]),
+        caption: 'Transitions, table view' });
+    }
+
+    const k2 = C.card(panel, 'When the dwellings were built',
+      `Earliest dwelling on the parcel, by the DOR’s year built, at tax year ${ty}. The series the other views draw on begins in 2003.`);
+    C.histogram(k2, { values: YB_COLS.map((n) => base[n]), xLabels: YBL, color: cssVar('--cat-3'), xTickEvery: 1,
+      caption: 'Dwellings by year built' });
+
+    const k3 = C.card(panel, 'Condition by age',
+      (twpLevel && sel ? 'Statewide: condition by age is published at county grain. ' : '')
+      + `Share of each year-built cohort in each condition class at tax year ${ty}. Older housing should rate worse; `
+      + 'where it does not, the rating is stale or the stock was rebuilt.');
+    const grid = condByDecade(T, counties, s);
+    C.stackedArea(k3, { series: grid, labels: L.map(shortCond), colors: seq, xLabels: YBL, share: true,
+      caption: 'Condition by year-built cohort, table view' });
+
+    const k4 = C.card(panel, 'What the building records say about the ladder',
+      `At tax year ${ty}. The parcel layer’s building value and house number are inferred signals; the DOR’s dwelling, `
+      + 'commercial and outbuilding records are the appraiser’s. Each tile is a test with a count on both sides. '
+      + (twpLevel && sel ? 'The fuller set of tests is published at county grain; switch to counties to see it.' : ''));
+    const wcols = twpLevel && sel ? WITNESS_TWP : WITNESS_CTY;
+    const w = camaSum(src.t, src.m.get(s), src.u, wcols);
+    const wsw = camaSum(T.cty, T.ctyBy.get(s), [0], WITNESS_CTY);
+    witnessTiles(k4, w, { full: !(twpLevel && sel), statewide: sel ? wsw : null });
+    if (!(twpLevel && sel)) {
+      const tm = timingSeries(T, counties, s);
+      if (tm.years.length) {
+        C.stackedArea(k4, { series: tm.series,
+          labels: ['earlier structure on the parcel', 'on time', 'one roll late', 'two or more rolls late', 'never'],
+          colors: C.ramp('ord5', 5), xLabels: tm.years.map(String), share: true,
+          caption: 'Dwellings by year built: when the ladder first showed a building value, in tax-year rolls' });
+        const d = document.createElement('div');
+        d.className = 'caveat';
+        d.innerHTML = 'A dwelling built in year Y goes on the Y+1 roll, and an export carries its own year’s roll only '
+          + 'from July: the January exports still hold the previous year’s values. “On time” is the first export '
+          + 'that could carry the dwelling. “Earlier structure” means a value stood on the parcel before the year '
+          + 'built. “Never” is a miss: the DOR holds a dwelling the parcel layer has not valued. The January export '
+          + 'of the following year carries the roll, so the missing 2012 and 2015 exports cost no dwelling its '
+          + 'on-time reading.';
+        k4.appendChild(d);
+      }
+    }
+
+    const ci = (n) => T.cty.columns.indexOf(n);
+    const ranked = [...(T.ctyBy.get(s) || new Map()).entries()]
+      .filter(([u]) => u > 0)
+      .map(([u, r]) => { const o = {}; CD_COLS.forEach((n) => { o[n] = num(r[ci(n)]); }); return { u, rated: ratedOf(o), v: belowShare(o) }; })
+      .filter((d) => d.rated >= 100 && isFinite(d.v))
+      .sort((a, b) => b.v - a.v).slice(0, 15);
+    const k5 = C.card(panel, 'Counties with the largest share of housing rated fair or worse',
+      `Counties with at least 100 rated dwellings, tax year ${ty}.`);
+    C.rankBars(k5, { items: ranked.map((d) => ({ label: countyLabel(d.u), value: d.v, detail: `${C.fmtInt(d.rated)} rated` })),
+      color: cssVar('--cat-1'), fmt: (v) => C.fmtPct(v), caption: 'Share rated fair or worse, by county' });
+  },
+};
+
 async function absorptionCard(panel) {
   const t = await loadTable('absorption');
   const col = (n) => t.columns.indexOf(n);
@@ -411,7 +787,10 @@ async function absorptionCard(panel) {
     return out;
   });
   const card = C.card(panel, 'Absorption: share of a cohort built, by age',
-    'Of the lots created at each vintage, the share carrying an assessed building N years later. Curves plateau near 50–58%.');
+    'Of the lots created at each vintage, the share carrying an assessed building N years later. Curves plateau near 50–58%. '
+    + 'Two things the DOR’s building records showed (Condition view): a third of new lots that carry a house were split off '
+    + 'around an existing one, so the curves start part-full; and a January export carries the previous year’s roll, so a '
+    + 'cohort’s built share can run up to a year behind.');
   C.lineChart(card, {
     series, labels: pick.map((c) => S.dim.snapshots[c]?.date.slice(0, 4) ?? String(c)),
     colors: C.ramp('ord5', 5).slice(0, series.length),
@@ -1081,7 +1460,7 @@ function selectionNote() {
 }
 
 
-/* 8. Reports -- the five printable documents, composed in reports.js */
+/* 9. Reports -- the six printable documents, composed in reports.js */
 VIEWS.reports = {
   label: 'Reports',
   legend: 'Reports',
@@ -1164,7 +1543,7 @@ async function generateReport() {
     status.textContent = 'The period must run from an earlier vintage to a later one.';
     return;
   }
-  const params = kind === 'profile' ? { county: county || 6 }
+  const params = (kind === 'profile' || kind === 'condition') ? { county: county || 6 }
     : kind === 'worksheet' ? { county: county || null }
     : kind === 'activity' ? { a, b } : {};
   const gen = ++S.reportGen;
@@ -1226,7 +1605,10 @@ VIEWS.about = {
       the differences between snapshots are the events: parcels created and retired, owners
       changed, buildings assessed. Statistics are aggregated to ${S.meta.townships.toLocaleString()}
       PLSS townships and ${S.meta.counties} counties, and the newest export’s parcels themselves
-      (about 887,000) are drawn once the map is zoomed past level 10.</p>
+      (about 887,000) are drawn once the map is zoomed past level 10. Beside the parcel layer, the Department
+      of Revenue’s own building records, from three exports of its ORION appraisal database, are joined to the
+      parcels at eight tax years (2014, 2015 to 2018 and 2024 to 2026): the condition and age of the housing
+      stock, and an independent check on what the parcel layer says is built.</p>
       <p>It was built by <a href="https://www.epistemegeospatial.com/">Episteme Geospatial</a> as a
       working instrument for the questions the cadastral record can answer: where land is being
       divided, who owns it and from where, what has actually been built on it, and how concentrated
@@ -1236,7 +1618,8 @@ VIEWS.about = {
       <ul>
         <li><strong>Tabs</strong> choose a view. Each view paints the map and fills this panel with its charts.</li>
         <li><strong>The snapshot slider</strong> picks a vintage; the map, the tiles of numbers and the charts’
-          cursor follow it. The date shown is the export date, not an assessment date.</li>
+          cursor follow it. The date shown is the export date, not an assessment date. The Condition view has
+          building records at eight of the vintages and shows the nearest one at or before the slider.</li>
         <li><strong>Unit</strong> switches the aggregate surface between PLSS townships and counties.
           <strong>Measure</strong> switches between parcels and acres where a view supports both.</li>
         <li><strong>Click a unit</strong> on the map to focus every chart on it; shift-click adds units;
@@ -1248,11 +1631,13 @@ VIEWS.about = {
           A <span style="color:var(--created);font-weight:700">magenta</span> outline marks parcels first seen in the
           selected vintage.</li>
         <li><strong>Layers</strong> adds the township grid, county boundaries, roads with their names, building
-          footprints where lidar has flown, reservations, public lands and city limits. The basemap is outlines only;
-          an OpenStreetMap basemap can be switched on, and only then does the page fetch anything from a third party.</li>
+          footprints (the 2018 statewide set, with lidar footprints where flown), reservations, public lands and city limits. The basemap is outlines only;
+          the basemap menu offers an in-house Montana basemap built from the State Library’s frameworks (roads, water,
+          places, buildings and address points, served from this site) and an OpenStreetMap one; only the latter
+          fetches anything from a third party.</li>
         <li><strong>Reports</strong> composes a printable document from the same tables: a county profile, a
-          statewide trends brief, a large-holdings update in the form of the paper, a review worksheet as a CSV, and a
-          subdivision-activity report for a chosen period. <em>Save as PDF</em> hands the page to the browser’s print
+          housing condition profile, a statewide trends brief, a large-holdings update in the form of the paper, a
+          review worksheet as a CSV, and a subdivision-activity report for a chosen period. <em>Save as PDF</em> hands the page to the browser’s print
           dialog, where “Save as PDF” is the destination; nothing leaves the browser.</li>
         <li>The <strong>◐</strong> button toggles light and dark.</li>
       </ul>`);
@@ -1265,6 +1650,18 @@ VIEWS.about = {
       cohort (of the lots created at a vintage, the share carrying a building N years later) and the
       <em>dormant inventory</em> (lots under 40 acres that have sat at the bottom of the ladder five years or more).
       Dedicated common areas (open space, parks, HOA and condominium tracts) are counted apart and never climb.</p>
+      <p><strong>Condition.</strong> The Department of Revenue’s own building records, from its ORION appraisal
+      database, joined to the parcels on the geocode at eight tax years: the condition of the principal dwelling on
+      the DOR’s scale from Unsound (1) to Excellent (10), the earliest year built, and the same dwellings followed
+      from point to point. Through tax year 2014 the DOR filled CDU, the composite rating its dictionary describes;
+      at the 2015 reappraisal it retired the composite by copying it into four components and has rated them apart
+      since, so the rating is CDU for 2014 and the physical-condition component after, and the view says which. The map
+      draws condition and age together as one grid of nine colours, condition across and age up: thirds of the units
+      shown at township and county grain, fixed classes on the parcels (fair or worse, average, good or better; before
+      1980, 1980 to 2004, 2005 on). The
+      same records are an independent witness to the ladder, and the view reports each test with a count on both
+      sides at every point: whether a parcel the layer calls built has a structure on record, how soon after a
+      dwelling’s year built the ladder first showed a value, whether a dormant lot carries a dwelling after all.</p>
       <p><strong>Ownership.</strong> Tenure (public domain, tribal trust, private) and the owner’s distance from
       the land (the same place, the same county, elsewhere in Montana, out of state), both read from the mailing
       address on the record. The map shows the out-of-state share; the charts add the trust-and-fee checkerboard
@@ -1294,14 +1691,19 @@ VIEWS.about = {
       consolidation methodology in its supplement. The Holdings view reports this dashboard’s residuals against
       that paper’s Table 1 so the reproduction can be judged.</p>
       <p>The development ladder, absorption, dormant inventory, churn and threshold analyses were constructed for
-      this dashboard from the same records. Each card’s caption states its definition, and the measured decisions
-      behind them are kept in the project’s findings log.</p>
+      this dashboard from the same records, and the condition series and the witness tests from the Department of
+      Revenue’s building records. Each card’s caption states its definition, and the measured decisions behind them
+      are kept in the project’s findings log.</p>
       <p>Data: the Montana Cadastral Framework (Montana State Library and Department of Revenue), ${S.nSnaps}
       exports from ${first} to ${last}; the Montana Public Lands layer (State Library, 2026) for public domain by
       area; reservations and incorporated cities (State Library); the Transportation Framework road centerlines
-      (State Library and Department of Transportation, June 2026); lidar building footprints (State Library, 37
-      project areas); and Department of Revenue ORION party identifiers to bridge owners in the 2024 to 2026
-      vintages.</p>`);
+      (State Library and Department of Transportation, June 2026); building footprints (Microsoft US Building
+      Footprints, 2018 release, ODbL, as redistributed by the State Library, merged with the State Library’s lidar
+      building footprints, 37 project areas); the Structures Framework’s address points (State Library, exported
+      2026-10-30), as a witness to the address rung and in the in-house basemap, which also draws the NHD
+      hydrography, GNIS place names, county and city boundaries and public lands (State Library); and the Department of Revenue’s ORION appraisal database in three exports (refreshed
+      2016-03-27, 2018-06-21 and 2026-06-24), for the building records behind the Condition view and the party
+      identifiers that bridge owners in the 2024 to 2026 vintages.</p>`);
 
     section('Caveats', `
       <ul>
@@ -1312,7 +1714,17 @@ VIEWS.about = {
         <li>The 2009-07-05 export ships its value and agricultural columns entirely zero. Improvement status and
           agricultural acreage are unknown there, not zero, and that vintage is left out of the charts that need them.</li>
         <li>The ladder is probabilistic: a parcel with a house number carries an assessed building 89 to 91% of the
-          time, and some parcels carry a building with no house number.</li>
+          time, and some parcels carry a building with no house number. Checked against the Department of Revenue’s
+          building records, the parcel layer and the appraiser agree on whether a parcel is built on 99.5 to 99.7%
+          of parcels in every tax year tested.</li>
+        <li>The State Library’s address points are a third record: on the newest export they agree with the parcel
+          layer’s house number on 92% of parcels, place a residential point on 94% of parcels with a dwelling on
+          record, and their own geocode names the parcel that contains them 98.7% of the time. A multi-unit
+          building is usually one point. The framework has no history, so only the newest point carries the test.</li>
+        <li>Condition and year built are the appraiser’s record at eight tax years, not a continuous series, and
+          a rating is as current as the last inspection. An export dated January or February carries the previous
+          year’s roll, so a dwelling built in one year enters the ladder in the first export after the middle of the
+          next; the Condition view states the test in those terms.</li>
         <li>Owner location is a mailing address, not a residence.</li>
         <li>Public domain comes from one 2026 public-lands layer applied to every year, decided by area overlap;
           tribal trust comes from owner names, because trust land is absent from that layer. A reservation boundary
@@ -1324,8 +1736,11 @@ VIEWS.about = {
           the rule touches 7.7% of platted-only subdivision lots under 40 acres and 0.3% of built parcels.</li>
         <li>The parcels drawn are the newest export’s. A parcel split later shows as its pieces at every date;
           the magenta outline is the one thing on the parcel map that follows the slider.</li>
-        <li>Parcel geometry is generalised for the tiles (about 2.4 m). Building footprints exist only where lidar
-          has flown, about an eighth of the state; roads are as of June 2026.</li>
+        <li>Parcel geometry is generalised for the tiles (about 2.4 m). Building footprints are Microsoft’s 2018
+          computer-generated set, which carries 79% of the parcels with an appraised dwelling statewide (89% of those
+          built before 2015, 11% of those built in 2018 or later), overlaid with the State Library’s lidar footprints
+          where lidar has flown, an eighth of the state; together 82% statewide and about 91% inside the flown areas.
+          A 2018 footprint inside a flown area that the lidar did not see is drawn lighter. Roads are as of June 2026.</li>
         <li>Agricultural-use acreage is clamped to each parcel’s own area, since some exports report more
           agricultural acres than mapped acres.</li>
         <li>No parcel-level owner information is published. The largest holdings are named from the public
@@ -1381,6 +1796,10 @@ function buildControls() {
       $('erawrap').hidden = k !== 'thresholds';
       $('originwrap').hidden = k !== 'ownership';
       $('level').disabled = (k === 'holdings' || k === 'review');
+      // The DOR's building records exist at eight points; the slider picks the
+      // nearest earlier one. The unit is the dwelling, not parcels or acres.
+      $('measure').disabled = (k === 'condition');
+      $('timewrap').title = k === 'condition' ? 'Building records exist at eight vintages (tax years 2014, 2015-2018, 2024-2026); the slider shows the nearest earlier one.' : '';
       // About is prose and Reports is paper: the map and filters step aside,
       // and the map is told its size again when they come back.
       document.body.classList.toggle('full', !!VIEWS[k].full);
@@ -1521,6 +1940,10 @@ export async function boot() {
           + (Number(props.hr) > 0 ? ` \u00b7 #${Number(props.hr)} largest` : '')
           + (Number(props.hp) ? ' \u00b7 awaiting review' : '')]);
       }
+      if (props.cd != null && Number(props.cd) >= 0) {
+        rows.push(['dwelling condition', `${(L.condition || [])[Number(props.cd)] || '-'} · DOR rating, tax year ${S.meta.cama?.tax_year || 2026}`]);
+      }
+      if (props.yb != null && Number(props.yb) > 0) rows.push(['year built', `${Number(props.yb)} (earliest dwelling on the parcel)`]);
       if (Number(props.res)) rows.push(['', 'inside a reservation']);
       if (Number(props.cnd)) rows.push(['', 'condominium unit']);
       box.innerHTML = `<span class="x" id="pi-x">\u00d7</span>`

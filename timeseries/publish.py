@@ -38,12 +38,14 @@ from cadastral.schema import COUNTY_PREFIX
 from . import locality
 from . import ownerclass as oc
 from . import sources
+from . import cama
 
 log = logging.getLogger("timeseries.publish")
 
 FACT_DIR = "data/facts"
 LOC_DIR = "data/locator"
 LADDER_DIR = "data/ladder"
+CAMA_DIR = "data/cama"
 COVER_DIR = "data/coverage"
 EVENT_DIR = "data/events"
 OUT_DIR = "site/public/data"
@@ -239,6 +241,39 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
                 d[c] = d[c].astype(str)
         files[name] = _write(d, os.path.join(out_dir, f"{name}.parquet"))
 
+    # ---- the DOR's building records (stage 11): dwelling condition and year
+    # built, one cross-section, with the witness counts against the ladder.
+    # The township table arrives keyed on tr_key and is keyed to `u` here
+    # like every other township table.
+    cama_meta = {}
+    cq_path = os.path.join(CAMA_DIR, "qa_cama.json")
+    if os.path.exists(cq_path):
+        ct = pd.read_parquet(os.path.join(CAMA_DIR, "cama_township.parquet"))
+        ct["u"] = ct["tr_key"].map(twp_id)
+        ct = ct[ct["u"].notna()].copy()
+        ct["u"] = ct["u"].astype("int16")
+        files["cama_township"] = _write(ct.drop(columns=["tr_key"]),
+                                        os.path.join(out_dir, "cama_township.parquet"))
+        for name in ("cama_county", "cama_timing", "cama_condition_decade", "cama_transitions"):
+            files[name] = _write(pd.read_parquet(os.path.join(CAMA_DIR, f"{name}.parquet")),
+                                 os.path.join(out_dir, f"{name}.parquet"))
+        cq = json.load(open(cq_path))
+        newest = cq["points"][-1]
+        orion_keys = ("tax_year", "rating_field", "dwelling_rows", "dwelling_rows_with_cdu",
+                      "dwelling_rows_with_phycondition", "properties_with_dwelling")
+        cama_meta = {
+            "date": cq["date"], "tax_year": cq["tax_year"], "refresh_date": newest["refresh_date"],
+            "rating_field": newest["rating_field"], "note": cq["note"],
+            # the newest point in full, every point compactly, and the transitions
+            "series": cq["series"], "orion": newest["orion"], "join": newest["join"],
+            "witness": newest["witness"],
+            "points": [{"tax_year": p["tax_year"], "date": p["date"], "s": p["s"],
+                        "refresh_date": p["refresh_date"], "rating_field": p["rating_field"],
+                        "orion": {k: p["orion"].get(k) for k in orion_keys},
+                        "witness": p["witness"]} for p in cq["points"]],
+            "transitions": cq["transitions"],
+        }
+
     # ---- large private holdings (stage 10). County grain only -- the paper's
     # unit -- with county_n 0 carrying the statewide row. The top-holdings
     # table carries owner names: the only place the payload does, because a
@@ -350,6 +385,8 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
             "review_status": ["clean", "merged by entity name", "name-token check",
                               "flagged for review", "reviewed: merged", "merged by ORION party id",
                               "reviewed: kept separate"],
+            "condition": cama.CONDITION_LABELS,
+            "year_built": cama.YB_LABELS,
         },
         "delta_coded": bool(delta),
     }
@@ -393,6 +430,7 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
                      "dormant_lt40ac_acres", "dormant_note") if k in lad},
         "thresholds": lad.get("thresholds", {}).get("edge_tests"),
         "holdings": hold_meta,
+        "cama": cama_meta,
         "caveats": [
             "2002 is excluded: it lacks Silver Bow, Yellowstone, Missoula, "
             "Gallatin and Flathead, exactly where parcels are created.",
@@ -421,6 +459,12 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
             "name bridges for entities and couples. The manual review the method "
             "requires is shown as a range (document tier to maximal tier) and as "
             "flags, never assumed.",
+            "Dwelling condition and year built come from three ORION refreshes "
+            "joined into eight tax years (2014, 2015-2018, 2024-2026), each to the "
+            "parcel export carrying its roll. The rating is CDU, the composite, "
+            "through 2014 and its physical-condition component after, when the "
+            "DOR retired the composite by copying it into its components; it is "
+            "the principal dwelling's on the parcel.",
         ],
         "files": files,
     }

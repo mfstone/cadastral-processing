@@ -28,6 +28,8 @@ const DATA = [
   'lidar_coverage.geojson',
   'holdings_county.parquet', 'holdings_top.parquet', 'holdings_review.parquet',
   'threshold_edges.parquet', 'county_size_histogram.parquet', 'regression_table1.parquet',
+  'cama_township.parquet', 'cama_county.parquet', 'cama_timing.parquet', 'cama_condition_decade.parquet',
+  'cama_transitions.parquet',
 ];
 
 console.log(`\nsmoke: ${BASE}\n`);
@@ -86,8 +88,8 @@ const subText = await page.$eval('#sub', (e) => e.textContent.trim());
 ok('header reports the series', /29 vintages/.test(subText), subText);
 
 const views = await page.$$eval('#nav button', (bs) => bs.map((b) => b.textContent.trim()));
-ok('all nine views present, Reports then About last',
-  views.length === 9 && views[7] === 'Reports' && views[8] === 'About', views.join(', '));
+ok('all ten views present, Condition after Development, Reports then About last',
+  views.length === 10 && views[1] === 'Condition' && views[8] === 'Reports' && views[9] === 'About', views.join(', '));
 
 // Map rendered something.
 const canvas = await page.$('#map canvas');
@@ -170,6 +172,42 @@ await new Promise((r) => setTimeout(r, 7000));
 const pc = await page.evaluate(() =>
   window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] }).length);
 ok('parcels render at z12', pc > 500, `${pc} features`);
+// The DOR's building record rides on the tile: condition 0-7 and year built.
+const cdAttr = await page.evaluate(() => {
+  const fs = window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] });
+  return { n: fs.length,
+    withCd: fs.filter((f) => f.properties.cd != null && Number(f.properties.cd) >= 0).length,
+    withYb: fs.filter((f) => Number(f.properties.yb) > 0).length };
+});
+ok('parcel tiles carry the DOR condition and year built', cdAttr.withCd > 50 && cdAttr.withYb > 50, JSON.stringify(cdAttr));
+// The Condition view's parcel paint must be the DOR rating and the year built
+// together (the bivariate grid, nine cells in the legend), and its popup must
+// name the rating and the year built.
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Condition') b.click(); });
+await new Promise((r) => setTimeout(r, 3500));
+const condView = await page.evaluate(() => {
+  const paint = window.__map.map.getPaintProperty('parcel-fill', 'fill-color');
+  const fs = window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] })
+    .filter((f) => Number(f.properties.cd) >= 0 && Number(f.properties.yb) > 0);
+  return { rated: fs.length, paintUsesCd: JSON.stringify(paint).includes('"cd"') && JSON.stringify(paint).includes('"yb"'),
+    cells: document.querySelectorAll('#legend .bv .grid i').length, sliderOn: !document.getElementById('snap').disabled,
+    legend: document.getElementById('legend').textContent,
+    cards: [...document.querySelectorAll('#panel .card h3')].map((e) => e.textContent),
+    caption: document.querySelector('#panel .card .cap')?.textContent || '',
+    tiles: [...document.querySelectorAll('#panel .stat .k')].map((e) => e.textContent).slice(0, 6) };
+});
+ok('Condition view paints parcels by the DOR rating and year built, keeps the time slider and draws the series',
+  condView.rated > 50 && condView.paintUsesCd && condView.cells === 9 && condView.sliderOn && /condition/i.test(condView.legend)
+    && condView.tiles.some((t) => /dwelling/i.test(t)) && /tax years? 20\d\d/.test(condView.caption)
+    && condView.cards.some((c) => /over the series/i.test(c)) && condView.cards.some((c) => /point to point/i.test(c)),
+  JSON.stringify({ rated: condView.rated, sliderOn: condView.sliderOn, cards: condView.cards }));
+// Moving the slider back to 2017 must change the point the view describes.
+await page.evaluate(() => { const sl = document.getElementById('snap'); sl.value = '18'; sl.dispatchEvent(new Event('change')); });
+await new Promise((r) => setTimeout(r, 3000));
+const condBack = await page.evaluate(() => document.querySelector('#panel .card h3')?.textContent || '');
+ok('Condition view follows the slider to an earlier point', /tax year 2016/.test(condBack), condBack);
+await page.evaluate(() => { const sl = document.getElementById('snap'); sl.value = sl.max; sl.dispatchEvent(new Event('change')); });
+await new Promise((r) => setTimeout(r, 2000));
 // The agricultural-acreage line has a deliberate gap (NaN) at 2009-07-05;
 // the chart must scale to the finite values and draw inside its frame.
 await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Fragmentation') b.click(); });
@@ -209,7 +247,7 @@ const back = await page.evaluate(() => ({
   canvas: window.__map.map.getCanvas().width > 0 }));
 ok('leaving About restores the map', back.mapShown && back.canvas, JSON.stringify(back));
 
-// The Reports view: five documents composed from the same tables and printed
+// The Reports view: six documents composed from the same tables and printed
 // to PDF by the browser. Each must compose without error and carry its
 // sections; the worksheet must be a CSV shaped for owner_overrides.csv; and
 // the print path (the same one Save as PDF uses) must yield a real PDF.
@@ -219,7 +257,7 @@ const rform = await page.evaluate(() => ({
   kinds: [...document.querySelectorAll('#rpt-kind option')].map((o) => o.value),
   county: !!document.getElementById('rpt-county'), go: !!document.getElementById('rpt-go'),
   mapHidden: document.getElementById('mapwrap').offsetHeight === 0 }));
-ok('Reports view offers the five reports', rform.kinds.length === 5 && rform.county && rform.go && rform.mapHidden, JSON.stringify(rform));
+ok('Reports view offers the six reports', rform.kinds.length === 6 && rform.county && rform.go && rform.mapHidden, JSON.stringify(rform));
 const compose = async (kind, county) => {
   await page.evaluate((k, c) => {
     const s = document.getElementById('rpt-kind'); s.value = k; s.dispatchEvent(new Event('change'));
@@ -247,6 +285,13 @@ const prof = await compose('profile', '6');
 ok('county profile composes every section with populated tiles',
   /Gallatin/.test(prof.title) && prof.secs >= 13 && prof.svgs >= 14 && prof.dashes === 0 && prof.pdfBtn && prof.width === 816,
   JSON.stringify(prof));
+// The witness table carries ten tests from the DOR records plus two from the
+// Structures Framework address points on the newest series point: 12 rows.
+const cond = await compose('condition', '6');
+ok('housing condition profile composes its sections from the DOR building records and the address points',
+  /Gallatin County housing condition/.test(cond.title) && cond.secs >= 7 && cond.svgs >= 8 && cond.dashes === 0
+    && cond.tableRows.includes(8) && cond.tableRows.includes(12) && cond.pdfBtn,
+  JSON.stringify(cond));
 const trnd = await compose('trends', null);
 ok('statewide trends brief is chart-led and dated', /2026|20\d\d/.test(trnd.title) && trnd.svgs >= 8 && trnd.dashes === 0, JSON.stringify(trnd));
 const hold = await compose('holdings', null);
@@ -274,23 +319,34 @@ await page.evaluate(() => { for (const b of document.querySelectorAll('#nav butt
 await new Promise((r) => setTimeout(r, 2500));
 
 // First-party reference layers: roads from the same tiles, named from the
-// vendored glyphs, and buildings where lidar has flown. Nothing is fetched
+// vendored glyphs, and buildings from the merged footprint layer. Nothing is fetched
 // from a third party by default: the basemap select starts at outlines only.
 const glyphRes = await fetch(`${BASE}/fonts/Noto%20Sans%20Regular/0-255.pbf`);
 ok('label glyphs are served first-party',
   glyphRes.ok && (await glyphRes.arrayBuffer()).byteLength > 10000, `status ${glyphRes.status}`);
-// Livingston: inside a lidar project area, so footprints exist (Bozeman is not).
+// Livingston: inside a lidar project area, so lidar footprints (src 2, 3) draw beside
+// the 2018 set; Bozeman is outside every project area, so only the 2018 set (src 1) does.
 await page.evaluate(() => window.__map.map.jumpTo({ center: [-110.56, 45.66], zoom: 13.4 }));
 await new Promise((r) => setTimeout(r, 7000));
 const ref = await page.evaluate(() => {
   const mp = window.__map.map;
   const q = (l) => (mp.getLayer(l) ? mp.queryRenderedFeatures({ layers: [l] }).length : -1);
-  return { roads: q('road-line'), buildings: q('bld-fill'), labels: q('road-label') + q('road-label-major'),
+  const srcs = [...new Set(mp.queryRenderedFeatures({ layers: ['bld-fill'] }).map((f) => Number(f.properties.src)))].sort();
+  return { roads: q('road-line'), buildings: q('bld-fill'), srcs, labels: q('road-label') + q('road-label-major'),
            base: mp.getStyle().layers.filter((l) => l.id.startsWith('base-')).length,
            glyphs: String(mp.getStyle().glyphs || ''), basemap: document.getElementById('basemap').value };
 });
 ok('roads and buildings draw from the parcel tiles', ref.roads > 50 && ref.buildings > 50,
   JSON.stringify({ roads: ref.roads, buildings: ref.buildings }));
+ok('footprints carry their source tag, lidar where flown', ref.srcs.includes(3) && !ref.srcs.includes(1)
+  && ref.srcs.every((v) => v >= 1 && v <= 4), JSON.stringify(ref.srcs));
+await page.evaluate(() => window.__map.map.jumpTo({ center: [-111.04, 45.675], zoom: 13.4 }));
+await new Promise((r) => setTimeout(r, 6000));
+const bz = await page.evaluate(() => {
+  const fs = window.__map.map.queryRenderedFeatures({ layers: ['bld-fill'] });
+  return { n: fs.length, ms: fs.filter((f) => Number(f.properties.src) === 1).length };
+});
+ok('the 2018 set draws outside the lidar areas (Bozeman)', bz.n > 200 && bz.ms === bz.n, JSON.stringify(bz));
 ok('road names render from first-party glyphs',
   ref.labels > 0 && /\/fonts\//.test(ref.glyphs) && !/openfreemap/.test(ref.glyphs),
   JSON.stringify({ labels: ref.labels, glyphs: ref.glyphs }));
@@ -315,6 +371,30 @@ const baseAfter = await page.evaluate(() => ({
 ok('external basemap tears down and glyphs return to first-party',
   baseAfter.base === 0 && /\/fonts\//.test(baseAfter.glyphs) && !/openfreemap/.test(baseAfter.glyphs),
   JSON.stringify(baseAfter));
+// The in-house basemap: State Library frameworks in one PMTiles archive under
+// /basemap, read by Range requests, with the vendored glyphs.
+const rangeRes = await fetch(`${BASE}/basemap/mt-basemap.pmtiles`, { headers: { Range: 'bytes=0-126' } });
+ok('the in-house basemap archive is served with Range support',
+  rangeRes.status === 206 && (await rangeRes.arrayBuffer()).byteLength === 127, `status ${rangeRes.status}`);
+await page.evaluate(() => { const s = document.getElementById('basemap'); s.value = 'montana'; s.dispatchEvent(new Event('change')); });
+await new Promise((r) => setTimeout(r, 9000));
+const mt = await page.evaluate(() => {
+  const mp = window.__map.map;
+  const layers = mp.getStyle().layers.filter((l) => l.id.startsWith('base-'));
+  const symbols = layers.filter((l) => l.type === 'symbol').map((l) => l.id);
+  const lines = layers.filter((l) => l.type === 'line').map((l) => l.id);
+  return { layers: layers.length,
+           labels: symbols.length ? mp.queryRenderedFeatures({ layers: symbols }).length : 0,
+           lines: lines.length ? mp.queryRenderedFeatures({ layers: lines }).length : 0,
+           glyphs: String(mp.getStyle().glyphs || ''),
+           credit: document.querySelector('.maplibregl-ctrl-attrib')?.textContent || '' };
+});
+ok('the in-house basemap draws from first-party tiles, with labels',
+  mt.layers > 20 && mt.labels > 0 && mt.lines > 0 && /\/fonts\//.test(mt.glyphs) && !/openfreemap/.test(mt.glyphs),
+  JSON.stringify({ layers: mt.layers, labels: mt.labels, lines: mt.lines, glyphs: mt.glyphs }));
+ok('the in-house basemap credits the State Library', /Montana State Library/.test(mt.credit), mt.credit.slice(0, 80));
+await page.evaluate(() => { const s = document.getElementById('basemap'); s.value = 'none'; s.dispatchEvent(new Event('change')); });
+await new Promise((r) => setTimeout(r, 1500));
 
 const legendMode = await page.evaluate(() => document.getElementById('legend').dataset.mode);
 ok('legend switches to the parcel key at depth', legendMode === 'parcel', legendMode);

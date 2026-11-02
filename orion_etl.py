@@ -7,6 +7,20 @@ authority gate: RefreshDate, tax years, row counts, key overlap with the parcel
 layer), then EXPORTS the ownership/deed tables to normalized Parquet that the
 pipeline reads -- so the 9.58 GB database is not needed per run.
 
+Phase 3 adds the CAMA building records -- ``Res`` (dwellings and mobile homes),
+``Com``, ``Oby``, ``Permit``, ``FinalVal`` and a per-property reduction of
+``InspHistory`` -- which ``timeseries.cama`` uses as an independent witness to
+the development ladder and as the source of the DOR's condition ratings.
+Three refreshes have been exported, each to its own cache: 2016-03-27 (tax
+years 2014-2016, ``orion_cache_2016``), 2018-06-21 (2016-2018,
+``orion_cache_2018``) and 2026-06-24 (2024-2026, ``orion_cache``). The composite
+``CDU`` column is filled on 412,439 of 412,440 dwellings for tax year 2014 and
+on a few dozen manufactured homes in every year after; from tax year 2015 its
+four components (``PhyCondition``, ``Utility``, ``PropDesirability``,
+``LocDesirability``) are filled instead. The DOR retired the composite at the
+2015 reappraisal by copying it into the components. Both are exported; the
+pipeline picks the filled field per tax year.
+
 The tables are exported NORMALIZED (one Parquet per ORION table); they are never
 pre-joined, because a property has many parties and a party has many names AND
 many addresses with no name<->address link -- a denormalized join would multiply
@@ -60,6 +74,41 @@ EXPORT_SPEC = {
         "DeedID", "PropertyID", "Book", "Page", "DeedDate", "DocNumber",
         "DocType", "DocType_Desc", "RecordedDate"], None),
     "systeminfo": ("SystemInfo", ["RefreshDate"], None),
+    # --- CAMA building records (Phase 3) -------------------------------
+    "res": ("Res", [
+        "ResID", "PropertyID", "TaxYear", "ResType", "Style", "Grade", "ClassCode",
+        "YearBuilt", "EffectiveYear", "YearRemod", "StoryHeight", "SFLA",
+        "Bedrooms", "FullBaths", "HalfBaths", "PctComplete",
+        "CDU", "PhyCondition", "Utility", "PropDesirability", "LocDesirability",
+        "Age", "PctGood", "RCN", "RCNLD"], "TaxYear"),
+    "com": ("Com", [
+        "ComID", "PropertyID", "TaxYear", "StructureType", "StructureType_Desc",
+        "UnitsPerBldg", "IdenticalUnits", "Grade", "YearBuilt", "YearEffective",
+        "YearRemod", "PctComplete", "RCNLD"], "TaxYear"),
+    "oby": ("Oby", [
+        "ObyID", "PropertyID", "TaxYear", "Type", "Description", "Description_Desc",
+        "Grade", "YearBlt", "Qty", "Condition", "Area", "PctComplete", "Value"], "TaxYear"),
+    "permit": ("Permit", [
+        "PermitID", "PropertyID", "PermitNumber", "Status", "IssueDate", "Amount",
+        "Type"], None),
+    "finalval": ("FinalVal", [
+        "PropertyID", "TaxYear", "FinalLand", "FinalBuilding", "FinalTotal",
+        "Method"], "TaxYear"),
+}
+
+# Reductions written from a query rather than a column list. InspHistory
+# re-lists a property's whole inspection record under every tax year (3.4 M
+# rows for 2026 against 0.99 M properties), so only the latest date and the
+# count per property-year are kept.
+EXPORT_SQL = {
+    "inspection": ("InspHistory",
+                   "SELECT i.PropertyID, i.TaxYear, MAX(i.InspDate) AS LastInspDate, "
+                   "COUNT(*) AS n_inspections FROM InspHistory i "
+                   "CROSS JOIN (SELECT RefreshDate AS rd FROM SystemInfo) r "
+                   # 63 rows in the 2026 refresh carry an inspection date after the
+                   # refresh (years like 8014); a bound keeps them out of 'latest'.
+                   "WHERE i.TaxYear IN ({years}) AND i.InspDate <= r.rd AND i.InspDate >= '1900-01-01' "
+                   "GROUP BY i.PropertyID, i.TaxYear"),
 }
 
 
@@ -117,6 +166,30 @@ def profile(conn, parcels_path: str | None, cache: str) -> None:
         emit("\n-- key overlap vs parcel layer (the authority gate) --")
         _overlap_report(conn, parcels_path, emit)
 
+    if "res" in present:
+        emit("\n-- building records (CAMA) --")
+        try:
+            cur.execute("""SELECT TaxYear, COUNT(*), COUNT(DISTINCT PropertyID),
+                                  SUM(CASE WHEN CDU IS NULL THEN 0 ELSE 1 END),
+                                  SUM(CASE WHEN PhyCondition IS NULL THEN 0 ELSE 1 END),
+                                  SUM(CASE WHEN YearBuilt IS NULL OR YearBuilt=0 THEN 0 ELSE 1 END)
+                           FROM Res GROUP BY TaxYear ORDER BY TaxYear""")
+            for ty, n, props, cdu, cond, yb in cur.fetchall():
+                emit(f"  Res {ty}: {n:,} dwellings on {props:,} properties; "
+                     f"CDU populated {cdu:,}, PhyCondition populated {cond:,}, "
+                     f"YearBuilt populated {yb:,}")
+            for tbl, yc in (("Com", "YearBuilt"), ("Oby", "YearBlt")):
+                cur.execute(f"""SELECT TaxYear, COUNT(*), COUNT(DISTINCT PropertyID),
+                                      SUM(CASE WHEN {yc} IS NULL OR {yc}=0 THEN 0 ELSE 1 END)
+                               FROM {tbl} GROUP BY TaxYear ORDER BY TaxYear""")
+                for ty, n, props, yb in cur.fetchall():
+                    emit(f"  {tbl} {ty}: {n:,} rows on {props:,} properties; {yc} populated {yb:,}")
+            cur.execute("SELECT COUNT(*), COUNT(DISTINCT PropertyID), MIN(IssueDate), MAX(IssueDate) FROM Permit")
+            n, props, lo, hi = cur.fetchone()
+            emit(f"  Permit: {n:,} permits on {props:,} properties, issued {lo} .. {hi}")
+        except Exception as e:
+            emit(f"  building records: ({e})")
+
     os.makedirs(cache, exist_ok=True)
     out = os.path.join(cache, "orion_profile.txt")
     with open(out, "w") as f:
@@ -148,11 +221,13 @@ def _overlap_report(conn, parcels_path, emit):
              f"GeoCodeSearch match {mg:,} ({mg/max(n,1)*100:.1f}%)")
 
 
-def export(conn, cache: str, tax_years: list[int]) -> None:
+def export(conn, cache: str, tax_years: list[int], only: list[str] | None = None) -> None:
     cur = conn.cursor()
     os.makedirs(cache, exist_ok=True)
     yr_in = ",".join(str(int(y)) for y in tax_years)
     for key, (tbl, want, yearcol) in EXPORT_SPEC.items():
+        if only and key not in only:
+            continue
         have = set(table_columns(cur, tbl))
         cols = [c for c in want if c in have]
         if not cols:
@@ -163,6 +238,15 @@ def export(conn, cache: str, tax_years: list[int]) -> None:
         sql = f"SELECT {sel} FROM [{tbl}]{where}"
         log.info("exporting %s ...", tbl)
         df = pd.read_sql(sql, conn)
+        out = os.path.join(cache, f"{key}.parquet")
+        df.to_parquet(out, index=False)
+        log.info("  %-14s %s rows, %d cols -> %s", key, f"{len(df):,}", len(df.columns),
+                 os.path.basename(out))
+    for key, (tbl, sql) in EXPORT_SQL.items():
+        if only and key not in only:
+            continue
+        log.info("exporting %s (reduced) ...", tbl)
+        df = pd.read_sql(sql.format(years=yr_in), conn)
         out = os.path.join(cache, f"{key}.parquet")
         df.to_parquet(out, index=False)
         log.info("  %-14s %s rows, %d cols -> %s", key, f"{len(df):,}", len(df.columns),
@@ -184,6 +268,8 @@ def parse_args(argv=None):
     p.add_argument("--tax-years", type=int, nargs="+", default=[2024, 2025, 2026])
     p.add_argument("--profile", action="store_true")
     p.add_argument("--export", action="store_true")
+    p.add_argument("--only", nargs="+", default=None,
+                   help="export only these keys of EXPORT_SPEC / EXPORT_SQL")
     return p.parse_args(argv)
 
 
@@ -200,7 +286,7 @@ def main(argv=None) -> int:
         if do_profile:
             profile(conn, args.parcels, args.cache)
         if do_export:
-            export(conn, args.cache, args.tax_years)
+            export(conn, args.cache, args.tax_years, args.only)
     finally:
         conn.close()
     log.info("ORION ETL done. cache: %s", args.cache)

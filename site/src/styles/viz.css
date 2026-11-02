@@ -37,6 +37,15 @@
   --div-neg-2: #036169; --div-neg-1: #63b3bc;
   --div-mid: #e2dccd;
   --div-pos-1: #dc8c7f; --div-pos-2: #a13029;
+  /* Bivariate grid for the Condition view: --bv-<condition 1 good..3 poor><age 1 new..3 old>.
+     Condition runs in the red of the diverging pole, age in the categorical blue, blends on the
+     short hue arc (plum, violet) so no cell reads as the grey mask; every pair of the nine
+     cells is as far apart as the gamut allows (OKLab dE x100, checked under normal, protan,
+     deutan and tritan vision) with every cell 13+ from --masked, so the lilac "new and good"
+     corner cannot be read as the grey mask. Derived by a search; see FINDINGS section 19. */
+  --bv-11: #dbb4f7; --bv-21: #d1796e; --bv-31: #b82a24;
+  --bv-12: #758acb; --bv-22: #91308e; --bv-32: #690031;
+  --bv-13: #3448bc; --bv-23: #3c0078; --bv-33: #1e001e;
 
   --statute: #af3c3a;
   --ui: #04665e; --ui-ink: #ffffff;
@@ -70,6 +79,9 @@
     --div-neg-2: #4fccd9; --div-neg-1: #2a7f88;
     --div-mid: #3a3529;
     --div-pos-1: #a45a4e; --div-pos-2: #fe8b7d;
+    --bv-11: #50326f; --bv-21: #8c5750; --bv-31: #eb5347;
+    --bv-12: #4c62b4; --bv-22: #b972b5; --bv-32: #fd969e;
+    --bv-13: #6786ff; --bv-23: #afb1fd; --bv-33: #fee7fc;
 
     --statute: #e66e68;
     --ui: #45c1b4; --ui-ink: #11100d;
@@ -103,6 +115,9 @@
   --div-neg-2: #4fccd9; --div-neg-1: #2a7f88;
   --div-mid: #3a3529;
   --div-pos-1: #a45a4e; --div-pos-2: #fe8b7d;
+  --bv-11: #50326f; --bv-21: #8c5750; --bv-31: #eb5347;
+  --bv-12: #4c62b4; --bv-22: #b972b5; --bv-32: #fd969e;
+  --bv-13: #6786ff; --bv-23: #afb1fd; --bv-33: #fee7fc;
 
   --statute: #e66e68;
   --ui: #45c1b4; --ui-ink: #11100d;
@@ -179,6 +194,11 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #legend .pl { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
 #legend .pl i { width: 11px; height: 11px; border-radius: 2px; flex: none; }
 #legend .pl i.ol { width: 9px; height: 9px; background: transparent; border: 2px solid; }
+#legend .bv { display: grid; grid-template-columns: 14px max-content; gap: 3px 6px; align-items: center; margin: 2px 0; }
+#legend .bv .ylab { writing-mode: vertical-rl; transform: rotate(180deg); color: var(--ink-muted); font-size: 10px; text-align: center; }
+#legend .bv .grid { display: grid; grid-template-columns: repeat(3, 20px); grid-template-rows: repeat(3, 20px); gap: 2px; }
+#legend .bv .grid i { display: block; border-radius: 2px; }
+#legend .bv .xlab { grid-column: 2; color: var(--ink-muted); font-size: 10px; }
 
 #layers {
   position: absolute; right: 10px; top: 10px; z-index: 3;

@@ -6,8 +6,12 @@ QGIS + Excel + SQL workflow with an entity-resolution + dissolve pipeline that
 collapses individual tax parcels into **consolidated-ownership polygons** for
 land-ownership-concentration analysis.
 
-> **Scope:** shapefile-only **MVP**. ORION (DOR CAMA SQL) enrichment is an
-> explicit **Phase 2** (see `cadastral/orion.py`), not implemented here.
+> **Scope.** The per-county consolidation tool below is the shapefile-only
+> MVP. The longitudinal pipeline under `timeseries/` and the dashboard under
+> `site/` grew out of it and now also read the DOR's ORION CAMA database: party
+> identifiers bridge owners in the identity stage, and the building records
+> (stage 11) give the dwelling condition series and the checks on the
+> development ladder. See *ORION integration* and *Dashboard* below.
 
 ## What it does
 
@@ -102,6 +106,8 @@ choices and the Table 1 regression baseline are in `docs/holdings_definitions.md
 | 9 | `timeseries/tenure_area.py` | `data/tenure/area_<date>`: public fraction per parcel by area overlap |
 | 10 | `timeseries/holdings.py` | `data/facts/holdings_{county,state,top,review}`: 640+ acre holdings, CLO4, top-N, Lorenz/Gini |
 | -- | `timeseries/regress.py` | `data/facts/regression_table1.csv`: residuals against the paper's Table 1 |
+| 11 | `timeseries/cama.py` | `data/cama/parcels_cama_<date>` (one per series point), `cama_{county,township,timing,condition_decade,transitions}`, `qa_cama.json`: the DOR's building records (ORION `Res`/`Com`/`Oby`/`Permit`/`FinalVal`/`InspHistory`) joined on the geocode at eight tax years as a witness to the ladder, and the dwelling condition and year built as a measure |
+| 12 | `timeseries/structures.py` | `data/structures/points_<date>`, `parcels_structures_<date>`, `qa_structures.json`: the State Library's Structures Framework address points (NENA v2, monthly) joined to the newest export's parcels twice, by containment and by the geocode each point records, as a witness to the address rung, the DOR's dwellings and the geocode itself |
 
 ```bash
 .venv/bin/python -m timeseries.extract          # now carries owner_addr_norm (+ generic / care-of flags), legal_desc, is_common_area
@@ -109,13 +115,45 @@ choices and the Table 1 regression baseline are in `docs/holdings_definitions.md
 .venv/bin/python -m timeseries.tenure_area      # ~5 min per snapshot; holdings falls back to the point method without it
 .venv/bin/python -m timeseries.holdings
 .venv/bin/python -m timeseries.regress
+.venv/bin/python -m timeseries.cama             # needs orion_cache/res.parquet etc.; see ORION integration
+.venv/bin/python -m timeseries.structures       # stage 12: address points as a witness; run before cama so the series carries it
+.venv/bin/python -m timeseries.tiles            # re-bake the parcel tiles so they carry `cd` / `yb`
 .venv/bin/python -m timeseries.publish && (cd site && npm run build)
+.venv/bin/python -m basemap.build --install-site site/public   # the in-house basemap (basemap/dist) and its copy under site/public/basemap
 ```
 
 The identity rule is the document's: the mailing address keys an owner, names
 bridge entities and couples across addresses, and everything the document
 leaves to a reviewer is carried as a flag and shown in the dashboard's Review
 view as a range between the document tier and the maximal tier.
+
+## Dashboard (`site/`)
+
+A static Astro site over the published tables (`timeseries/publish.py` writes
+`site/public/data/`; the parcel tiles come from `timeseries/tiles.py`). One
+shared map, one time slider over the 29 vintages, and ten tabs:
+
+| tab | what it answers |
+|---|---|
+| Development | the platted / addressed / built ladder, absorption by cohort, dormant inventory |
+| Condition | the DOR's dwelling condition and year built at eight tax years (2014, 2015-2018, 2024-2026), drawn together as a bivariate grid (condition across, age up; thirds of the units shown, fixed classes on the parcels), the same dwellings re-rated point to point, and the building records as a witness to the ladder |
+| Ownership | tenure, owner distance, out-of-state share, the reservation checkerboard |
+| Fragmentation | acreage by parcel size, agricultural-use acreage |
+| Churn | owner change among persisting parcels, address-only edits, condominiumisation |
+| Thresholds | new-lot sizes against the 20-, 40- and 160-acre lines |
+| Holdings | 640+ acre holdings, CLO4, Lorenz and Gini, the paper's Table 1 |
+| Review | the decisions the holdings method leaves to a reviewer |
+| Reports | six printable documents: county profile, housing condition profile, statewide trends brief, large-holdings update, review worksheet (CSV), subdivision activity for a period |
+| About | sources, definitions, caveats |
+
+```bash
+cd site && npm install
+npm run data            # = python -m timeseries.publish
+npm run tiles           # = python -m timeseries.tiles (about 25 minutes)
+npm run build && npm run preview
+SMOKE_URL=http://127.0.0.1:4321 npm run test:smoke     # 107 checks
+npm run reports:pdf     # composes every report through the print path (needs a preview on SMOKE_URL)
+```
 
 ## Module map
 
@@ -136,8 +174,40 @@ view as a range between the document tier and the maximal tier.
 | `timeseries/tenure_area.py` | public-land area overlap per parcel |
 | `timeseries/holdings.py` | large-holding and concentration metrics |
 | `timeseries/regress.py` | regression against the published Table 1 |
-| `timeseries/reference.py` | MDT road centerlines + lidar building footprints staged into the parcel tiles; statewide highways and city names for the low zooms (labels from vendored Noto Sans glyphs under `site/public/fonts`) |
-| `site/src/lib/reports.js` | the five printable reports (county profile, statewide brief, large-holdings update, review worksheet CSV, subdivision activity), composed in the page from the published tables and printed to PDF by the browser |
+| `timeseries/cama.py` | stage 11: the DOR's CAMA building records as a witness to the ladder (improvement, value, house-number, timing, cohort, dormant and permit tests) and as a measure (dwelling condition, year built) at parcel, township and county grain |
+| `timeseries/reference.py` | MDT road centerlines + building footprints (Microsoft's 2018 statewide set merged with the State Library's lidar footprints, each tagged by source, with a coverage test against the DOR's dwellings) staged into the parcel tiles; statewide highways and city names for the low zooms (labels from vendored Noto Sans glyphs under `site/public/fonts`) |
+| `timeseries/structures.py` | stage 12: the Structures Framework's address points as a witness (address rung, dwellings, geocode, units, manufactured homes, placement) |
+| `basemap/build.py`, `basemap/styles.py`, `basemap/pmtiles_writer.py` | the in-house Montana basemap: State Library frameworks staged to twelve layers, tiled by GDAL to z13, packaged as PMTiles with light and dark MapLibre styles; `check_pmtiles.mjs` reads the archive back with the official client |
+| `site/src/lib/reports.js` | the six printable reports (county profile, housing condition profile, statewide brief, large-holdings update, review worksheet CSV, subdivision activity), composed in the page from the published tables and printed to PDF by the browser |
+
+## In-house basemap (`basemap/`)
+
+The dashboard's basemap menu offers an in-house Montana basemap beside the
+external OpenStreetMap one, so a page can show streets, water, places,
+buildings and addresses without a third-party request. It is built from State
+Library frameworks only (Transportation Framework, Structures Framework, NHD
+hydrography, GNIS names, counties, cities, public lands) plus the merged
+building footprints, and packaged to be reused anywhere:
+
+```
+basemap/dist/
+  mt-basemap.pmtiles     one archive, zooms 4-13 (overzooms past 13)
+  mt-basemap.mbtiles     the same tiles for QGIS or a tile server
+  styles/light.json      MapLibre styles, warm neutrals parallel to Positron / Dark Matter
+  styles/dark.json
+  fonts/                 the Noto Sans glyphs the styles reference
+  index.html             a demo page
+  README.md, qa.json     layer schema, sources, feature counts
+```
+
+`python -m basemap.build` stages and tiles (16 minutes measured: one to stage, 15
+for GDAL to tile; 60,429 tiles, a 130 MB archive); `--install-site site/public`
+also copies the archive and renders the styles for `/basemap`.
+PMTiles needs HTTP Range: Astro preview honours it, Cloudflare Pages static
+assets do not and cap files at 25 MB, so a Pages deployment serves the archive
+from R2 (see `reference_cloudflare_workers_range` in the project notes). The
+tiles are written by GDAL's MVT driver; tippecanoe would generalise the low
+zooms better and is the upgrade if it is ever on hand.
 
 ## ORION integration (DOR CAMA database)
 
@@ -173,6 +243,49 @@ docker run -d --name orion-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD='<pw>' \
 ORION_SA_PASSWORD='<pw>' .venv/bin/python orion_etl.py   # writes orion_cache/*.parquet + orion_profile.txt
 # 5. the container + orion_work/Output.mdf copy can now be removed; only orion_cache/ is needed.
 ```
+
+### Building records (Phase 3, `timeseries/cama.py`)
+
+The ETL also exports the CAMA building tables -- `Res` (dwellings and
+manufactured homes), `Com`, `Oby`, `Permit`, `FinalVal` and a per-property
+reduction of `InspHistory` (latest inspection date and count; the full table
+re-lists a property's history under every tax year, 3.4 M rows for 2026).
+`orion_etl.py --export --only res com oby permit finalval inspection` adds them
+to an existing cache. Stage 11 joins them to the parcels on the geocode
+(`Property.GeoCodeSearch`) and uses them two ways: as an independent witness to
+the development ladder (every test is a named count on both sides in
+`data/cama/qa_cama.json` and `meta.json`), and as the source of the dwelling
+condition and year built the Condition view, the parcel tiles (`cd`, `yb`) and
+the housing condition report show.
+
+**Three refreshes make a series.** Two older ORION exports (refreshed
+2016-03-27, tax years 2014-2016; and 2018-06-21, tax years 2016-2018) are
+exported to their own caches and the stage reads every cache it finds
+(`cama.ORION_CACHES`, newest first; a tax year held twice is taken from the
+newest refresh). Each tax year is joined to the parcel export that carries
+its roll, which gives eight points: 2014, 2015-2018 and 2024-2026. The
+county, township, timing and condition-by-decade tables carry the snapshot
+index `s`; `cama_transitions` follows single-dwelling properties between
+consecutive points.
+
+```bash
+# the vintages attach beside the 2026 database in the same container
+#   CREATE DATABASE Orion2016 ON (FILENAME='/var/opt/mssql/orion/Output_2016.mdf') FOR ATTACH_REBUILD_LOG;
+ORION_SA_PASSWORD='<pw>' .venv/bin/python orion_etl.py --database Orion2016 --cache orion_cache_2016 --tax-years 2014 2015 2016 --parcels '' --profile --export
+ORION_SA_PASSWORD='<pw>' .venv/bin/python orion_etl.py --database Orion2018 --cache orion_cache_2018 --tax-years 2016 2017 2018 --parcels '' --profile --export
+```
+
+**CDU through 2014, its components after.** The data dictionary
+(`docs/reference/Revised Data Dictionary.xlsx`) defines `CDU` as the composite
+condition-desirability-utility rating. It is filled on 412,439 of 412,440
+dwellings for tax year 2014 and on a few dozen manufactured homes in every
+year since; from tax year 2015 its four components -- `PhyCondition`,
+`Utility`, `PropDesirability`, `LocDesirability` -- are filled instead, on the
+same scale: Unsound (1), Very Poor (3), Poor (5), Fair (6), Average (7), Good
+(8), Very Good (9), Excellent (10). The composite was retired at the 2015
+reappraisal by copying it into the components (it equals the 2015
+`PhyCondition` on 80.6% of dwellings). The stage picks the filled field per
+tax year and names it (`rating_field`): CDU for 2014, `PhyCondition` after.
 
 ### Run with ORION
 ```bash

@@ -174,7 +174,7 @@ export function legendRow(host, items) {
  */
 export function stackedArea(host, {
   series, labels, colors, xLabels, height = 200, fmt = fmtInt,
-  share = false, caption,
+  share = false, caption, xTickEvery,
 }) {
   const wrap = document.createElement('div');
   host.appendChild(wrap);
@@ -207,7 +207,7 @@ export function stackedArea(host, {
     for (let i = n - 1; i >= 0; i--) d += `L${X(i).toFixed(1)},${(Y(bot[i]) - (j > 0 ? GAP / 2 : 0)).toFixed(1)}`;
     el('path', { d: `${d}Z`, fill: colors[j], stroke: 'none' }, f.svg);
   }
-  xTicks(f.svg, f, xLabels);
+  xTicks(f.svg, f, xLabels, xTickEvery);
 
   // Direct labels on the widest segment when the series count is small.
   if (k <= 4) {
@@ -251,7 +251,7 @@ export function stackedArea(host, {
 
 /* -------------------------------------------------------------- line chart */
 export function lineChart(host, {
-  series, labels, colors, xLabels, height = 190, fmt = fmtInt, caption, yMax,
+  series, labels, colors, xLabels, height = 190, fmt = fmtInt, caption, yMax, xTickEvery,
 }) {
   const wrap = document.createElement('div');
   host.appendChild(wrap);
@@ -291,7 +291,7 @@ export function lineChart(host, {
       t.textContent = labels[l.j];
     }
   }
-  xTicks(f.svg, f, xLabels);
+  xTicks(f.svg, f, xLabels, xTickEvery);
 
   const ch = el('line', { class: 'crosshair', y1: f.y0, y2: f.y1, x1: -99, x2: -99 }, f.svg);
   const dots = series.map((_, j) => el('circle', {

@@ -32,6 +32,11 @@
 --------------------------------------------------------------------------- */
 
 import maplibregl from 'maplibre-gl';
+import { Protocol as PMTilesProtocol } from 'pmtiles';
+
+// The in-house basemap is one PMTiles archive read by HTTP Range through this
+// protocol, registered once for the page.
+maplibregl.addProtocol('pmtiles', new PMTilesProtocol().tile);
 
 const MT_BOUNDS = [[-116.4, 44.2], [-103.9, 49.1]];
 
@@ -59,12 +64,19 @@ function mapGround() {
     .getPropertyValue('--map-ground').trim();
   return v || '#ece5d5';
 }
-// OpenFreeMap serves the style JSON at the path itself -- appending
-// "/style.json" returns 404. Two styles so the basemap follows the theme.
-const BASEMAP_STYLES = {
-  light: 'https://tiles.openfreemap.org/styles/positron',
-  dark: 'https://tiles.openfreemap.org/styles/dark',
-};
+// Two basemaps, each in a light and a dark style so it follows the theme.
+// 'montana' is the in-house one (basemap/ in the repository): State Library
+// frameworks in one PMTiles archive under /basemap, which needs a host that
+// honours HTTP Range -- Astro preview does, Cloudflare Pages static assets do
+// not, so in production the archive lives on R2. 'positron' is OpenFreeMap,
+// which serves the style JSON at the path itself (appending "/style.json"
+// returns 404) and is the only thing on the page fetched from a third party.
+function basemapStyle(kind, dark) {
+  const theme = dark ? 'dark' : 'light';
+  if (kind === 'montana') return `${siteBase()}/basemap/styles/${theme}.json`;
+  return { light: 'https://tiles.openfreemap.org/styles/positron',
+           dark: 'https://tiles.openfreemap.org/styles/dark' }[theme];
+}
 
 // Road widths by draw class (1 primary .. 5 track) and zoom; k scales the
 // casing. Private roads and tracks have no casing, and draw in the casing
@@ -217,15 +229,20 @@ export class UnitMap {
       paint: { 'line-color': mapLine(), 'line-width': 0.4, 'line-opacity': 0.55 },
     });
     // --- reference layers from the same tiles: buildings, then roads -------
-    // Building footprints exist only where lidar has flown (37 project areas,
-    // an eighth of the state); drawn in a neutral that reads on any parcel
-    // colour. Roads are cased from z10 so they read on the ground as well as
-    // on a fill; private roads and tracks are a faint uncased line from z12.
+    // Building footprints: Microsoft's 2018 set statewide, the State Library's
+    // lidar footprints where flown (src 2 and 3). A 2018 footprint inside a
+    // flown area that the lidar did not see (src 4) is drawn at half strength:
+    // it is either gone by the flight or missed by it. A neutral that reads
+    // on any parcel colour. Roads are cased from z10 so they read on the
+    // ground as well as on a fill; private roads and tracks are a faint
+    // uncased line from z12.
+    const unseen = ['==', ['get', 'src'], 4];
     m.addLayer({
       id: 'bld-fill', type: 'fill', source: 'parcels', 'source-layer': 'buildings',
       minzoom: 12.5,
       paint: { 'fill-color': cssv('--building'),
-               'fill-opacity': ['interpolate', ['linear'], ['zoom'], 12.5, 0.35, 14, 0.6] },
+               'fill-opacity': ['interpolate', ['linear'], ['zoom'],
+                 12.5, ['case', unseen, 0.18, 0.35], 14, ['case', unseen, 0.3, 0.6]] },
     });
     m.addLayer({
       id: 'road-case', type: 'line', source: 'parcels', 'source-layer': 'roads',
@@ -563,7 +580,7 @@ export class UnitMap {
       || (!document.documentElement.getAttribute('data-theme')
           && window.matchMedia('(prefers-color-scheme: dark)').matches);
     try {
-      const res = await fetch(BASEMAP_STYLES[dark ? 'dark' : 'light']);
+      const res = await fetch(basemapStyle(kind, dark));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const style = await res.json();
 

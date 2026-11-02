@@ -25,12 +25,12 @@ await p.waitForSelector('#panel .card svg', { timeout: 60000 });
 await p.evaluate(() => { for (const x of document.querySelectorAll('#nav button')) if (x.textContent.trim() === 'Reports') x.click(); });
 await new Promise((r) => setTimeout(r, 800));
 
-const kinds = (process.env.KINDS || 'profile,trends,holdings,worksheet,activity').split(',');
+const kinds = (process.env.KINDS || 'profile,condition,trends,holdings,worksheet,activity').split(',');
 for (const kind of kinds) {
   const t0 = Date.now();
   await p.evaluate((k) => {
     const s = document.getElementById('rpt-kind'); s.value = k; s.dispatchEvent(new Event('change'));
-    if (k === 'profile') { const c = document.getElementById('rpt-county'); c.value = '6'; c.dispatchEvent(new Event('change')); }
+    if (k === 'profile' || k === 'condition') { const c = document.getElementById('rpt-county'); c.value = '6'; c.dispatchEvent(new Event('change')); }
     if (k === 'worksheet') { const c = document.getElementById('rpt-county'); c.value = ''; c.dispatchEvent(new Event('change')); }
     window.__report = null;
     document.getElementById('rpt-go').click();

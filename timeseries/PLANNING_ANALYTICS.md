@@ -144,6 +144,9 @@ resort-town condo boom as ranchland breaking up. Always a separate column.
   6-year before), so any assessed-value series carries administrative step
   changes that look like market events. Counts and flags, not dollars.
 - **Treating "no address" as "no building."** 30,812 counterexamples in 2026.
+- **A condition series read across 2014 → 2015 as if one field.** The DOR filled
+  CDU through tax year 2014 and its four components from 2015, seeded by copying;
+  the seam re-rates 19% of dwellings. Name the field at every point (FINDINGS §19).
 - **Mixing condo units into land fragmentation.** See item 9.
 - **Owner-origin analysis without legal form.** See item 3 — Washington DC.
 - **A single "subdivision" number.** Events are inferred; the confidence tiers
