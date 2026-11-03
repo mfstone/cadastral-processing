@@ -1,0 +1,61 @@
+/* wrangler.jsonc — the Worker that serves the Montana cadastral dashboard.
+ *
+ * The site is Astro's static output, served as Workers Static Assets.
+ * The Worker itself owns one thing: /api/assistant, the pinned streaming
+ * proxy between the page's assistant panel and the Anthropic Messages API
+ * (worker/assistant.mjs). Everything else falls through to the assets.
+ *
+ * run_worker_first names /api/* because the asset runtime answers any path
+ * that matches a file in `directory` BEFORE the Worker runs; naming the
+ * route makes the Worker's ownership of it a configured fact. The data and
+ * tiles stay assets on purpose: the page fetches every Parquet file whole
+ * and reads tiles by exact path, so nothing there needs HTTP Range. The
+ * in-house basemap archive does (it is PMTiles): until it moves to R2 it is
+ * the one thing a Pages/Workers deploy cannot serve, and the basemap menu
+ * falls back to outlines on its own when the archive is absent.
+ *
+ * Secrets (never in this file): ANTHROPIC_API_KEY, ASSISTANT_SALT, and for
+ * the bot check TURNSTILE_SECRET -- `npx wrangler secret put <NAME>`; locally
+ * in .dev.vars (see .dev.vars.example). */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mt-cadastral-change",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": { "enabled": true },
+
+  "assets": {
+    "directory": "./site/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
+  },
+
+  /* The assistant's knobs. The model and the effort are the two the cost
+   * turns on; the caps bound the worst day. ASSISTANT_NAMES is reserved:
+   * only "never" is implemented (the assistant never writes an owner's name). */
+  "vars": {
+    "ASSISTANT_ENABLED": "1",
+    "ASSISTANT_MODEL": "claude-opus-5-5",
+    "ASSISTANT_EFFORT": "medium",
+    "ASSISTANT_NAMES": "never",
+    "ASSISTANT_MAX_TOKENS": "12000",
+    "ASSISTANT_DAILY_REQUESTS": "600",
+    "ASSISTANT_DAILY_OUTPUT_TOKENS": "1500000",
+    "ASSISTANT_IP_DAILY_REQUESTS": "80",
+    "TURNSTILE_SITE_KEY": ""
+  },
+
+  /* A per-minute burst guard, enforced per Cloudflare location (approximate);
+   * the strict daily caps live in the Budget Durable Object. */
+  "ratelimits": [
+    { "name": "ASSIST_RL", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }
+  ],
+
+  "durable_objects": {
+    "bindings": [{ "name": "BUDGET", "class_name": "Budget" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Budget"] }]
+}

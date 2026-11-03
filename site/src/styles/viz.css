@@ -152,7 +152,10 @@ h2 { font-size: 13px; color: var(--ink-2); text-transform: uppercase; letter-spa
 h3 { font-size: 13px; }
 a { color: var(--ui); }
 
-#app { display: grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+/* One column that may shrink below its content: without minmax(0, 1fr) the
+   implicit auto column grows to the tab strip's unbreakable width on a phone
+   and drags the header, the filter row and the map out past the viewport. */
+#app { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; height: 100vh; }
 header {
   display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
   padding: 10px 14px; background: var(--surface-1);
@@ -186,7 +189,14 @@ nav button[aria-selected="true"] {
 #snaplabel { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink-1); min-width: 82px; }
 
 main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min-height: 0; }
-@media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* Stacked: the map takes the top of the screen and the panel scrolls beneath it. */
+@media (max-width: 1000px) {
+  main { grid-template-columns: 1fr; grid-template-rows: minmax(260px, 44vh) minmax(0, 1fr); }
+  #mapwrap { border-right: 0; border-bottom: 1px solid var(--grid); min-height: 260px; }
+  #panel { min-height: 0; }
+  body.full main { grid-template-rows: minmax(0, 1fr); }
+}
 #mapwrap { position: relative; min-height: 320px; border-right: 1px solid var(--grid); }
 #map { position: absolute; inset: 0; }
 #legend {
@@ -239,6 +249,24 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #parcelinfo .x { float: right; cursor: pointer; color: var(--ink-muted); }
 
 #panel { overflow-y: auto; padding: 12px 14px 28px; display: flex; flex-direction: column; gap: 16px; }
+/* A phone (after the base rules it overrides): the tabs scroll, the filter row compacts, the corners of the map stay clear. */
+@media (max-width: 700px) {
+  header { gap: 6px 10px; padding: 8px 10px; }
+  h1 { font-size: 15px; }
+  header .sub { display: none; }
+  nav { margin-left: 0; width: 100%; min-width: 0; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; }
+  header, #filters { min-width: 0; }
+  nav button { flex: none; padding: 7px 10px; min-height: 36px; }
+  #filters { gap: 6px 12px; padding: 6px 10px; }
+  #timewrap { min-width: 0; flex-basis: 100%; }
+  #snaplabel { min-width: 0; }
+  #legend { max-width: 56vw; font-size: 10.5px; padding: 6px 8px; }
+  #layers { font-size: 11px; min-width: 0; max-width: 42vw; }
+  #parcelinfo { max-width: 70vw; }
+  .maplibregl-ctrl-top-right { margin-right: 0; margin-top: 46px; }
+  #panel { padding: 10px 10px 24px; gap: 12px; }
+  .stats { gap: 12px; }
+}
 /* The About view is prose and the Reports view is paper: one column, the map
    and filters stepping aside. */
 body.full main { grid-template-columns: 1fr; }
@@ -308,6 +336,56 @@ details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink
 .tablewrap table.data th, .tablewrap table.data td { padding: 3px 6px; border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
 .tablewrap table.data th { color: var(--ink-2); font-weight: 650; }
 .badge { display: inline-block; font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--axis); border-radius: 9px; color: var(--ink-2); white-space: nowrap; }
+
+/* -------------------------------------------------------------- assistant */
+#assist-toggle {
+  font: inherit; font-size: 12px; padding: 4px 11px; border: 1px solid var(--ui); border-radius: 6px;
+  background: var(--ui); color: var(--ui-ink); cursor: pointer;
+}
+#assist-toggle[aria-expanded="true"] { background: var(--surface-1); color: var(--ui); }
+/* A drawer over the panel on wide screens, the whole screen on narrow ones;
+   the map is never reflowed. */
+#assist {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 30;
+  display: flex; flex-direction: column; background: var(--surface-1);
+  border-left: 1px solid var(--grid); box-shadow: -6px 0 24px rgba(0,0,0,.12); font-size: 13px;
+}
+#assist[hidden] { display: none; }
+.assist-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--grid); }
+.assist-head h2 { flex: 1; text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--ink-1); }
+.assist-head button, .assist-actions button, #assist .chip {
+  font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; border-radius: 6px;
+  border: 1px solid var(--axis); background: var(--surface-1); color: var(--ink-2);
+}
+#assist-close { font-size: 16px; line-height: 1; padding: 2px 8px; }
+#assist-log { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 14px; }
+.assist-turn { display: flex; flex-direction: column; gap: 6px; }
+.assist-q { align-self: flex-end; max-width: 92%; background: var(--page); border: 1px solid var(--grid);
+  border-radius: 10px 10px 2px 10px; padding: 6px 10px; white-space: pre-wrap; }
+.assist-status { color: var(--ink-muted); font-size: 12px; }
+.assist-a { line-height: 1.5; }
+.assist-a p { margin: 0 0 7px; }
+.assist-a ul, .assist-a ol { margin: 0 0 7px 18px; padding: 0; }
+.assist-a li { margin: 2px 0; }
+.assist-a code { font-size: 12px; background: var(--page); padding: 0 3px; border-radius: 3px; }
+.assist-trace { font-size: 11.5px; color: var(--ink-2); }
+.assist-trace summary { cursor: pointer; color: var(--ink-muted); }
+.assist-trace ol { margin: 4px 0 0 18px; padding: 0; }
+.assist-trace li { margin: 2px 0; }
+.assist-trace li.err { color: var(--statute); }
+.assist-actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
+#assist-suggest { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+#assist-suggest[hidden] { display: none; }
+#assist .chip { font-size: 11.5px; text-align: left; }
+#assist-form { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--grid); }
+#assist-q { font: inherit; font-size: 13px; padding: 7px 9px; border: 1px solid var(--axis); border-radius: 7px;
+  background: var(--surface-1); color: var(--ink-1); resize: vertical; min-height: 44px; }
+.assist-actions { display: flex; gap: 6px; }
+#assist-send { background: var(--ui); color: var(--ui-ink); border-color: var(--ui); }
+#assist-send:disabled { opacity: .6; cursor: default; }
+#assist-stop[hidden] { display: none; }
+#assist-privacy { margin: 0; padding: 0 12px 10px; font-size: 10.5px; color: var(--ink-muted); line-height: 1.4; }
+@media (max-width: 1000px) { #assist { width: 100vw; border-left: 0; } }
 
 /* ---------------------------------------------------------------- reports */
 .rform { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; margin-top: 6px; }
@@ -389,7 +467,7 @@ details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink
 @media print {
   html, body { background: #fff !important; height: auto; }
   #app { display: block; height: auto; }
-  header, #filters, #mapwrap, #legend, .no-print, .tip { display: none !important; }
+  header, #filters, #mapwrap, #legend, #assist, .no-print, .tip { display: none !important; }
   main { display: block; }
   #panel { display: block; overflow: visible; padding: 0; max-width: none; margin: 0; }
   .report { width: auto; max-width: none; padding: 0; margin: 0; border: 0; box-shadow: none; }

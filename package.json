@@ -1,0 +1,25 @@
+{
+  "name": "mt-cadastral-change-worker",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "The Cloudflare Worker that serves the Montana cadastral dashboard and its assistant endpoint.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build --prefix site",
+    "prompt": "node site/scripts/build-prompt.mjs",
+    "dev:worker": "wrangler dev",
+    "deploy": "npm run build --prefix site && wrangler deploy",
+    "test:worker": "node --test worker/test/*.test.mjs",
+    "audit": "npm audit --omit=dev --audit-level=high && npm audit --omit=dev --audit-level=high --prefix site",
+    "test": "npm run test:unit --prefix site && npm run test:worker"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.4.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.154.0"
+  }
+}

@@ -57,6 +57,7 @@ import pandas as pd
 
 from cadastral.schema import COUNTY_PREFIX
 from . import commonarea  # noqa: F401  (documents the exclusion; see dormant())
+from . import events as _events
 
 log = logging.getLogger("timeseries.cama")
 
@@ -341,10 +342,11 @@ def parcel_frame(date: str, snap_dir: str, event_dir: str, loc_dir: str,
                         columns=["parcel_id", "county", "county_n", "twp_code", "acres",
                                  "improved", "has_house_number", "dev_stage",
                                  "is_common_area", "is_condo", "build_value"])
-    pres = pd.read_parquet(os.path.join(event_dir, "presence.parquet"),
-                           columns=["parcel_id", "first_idx"])
-    p = p.merge(pres, on="parcel_id", how="left")
-    p["first_idx"] = p["first_idx"].fillna(-1).astype("int16")
+    # first_idx is the start of the occurrence present at this point: a
+    # geocode reissued after a gap is a new parcel from its return (events.py).
+    occ = _events.load_occurrences(event_dir)
+    at = snap_idx if snap_idx is not None else int(occ["last_idx"].max())
+    p["first_idx"] = p["parcel_id"].map(_events.occurrence_start(occ, at)).fillna(-1).astype("int16")
     p = p.merge(hist, on="parcel_id", how="left")
     for c in ("first_built_idx", "first_addr_idx"):
         p[c] = p[c].fillna(-1).astype("int16")

@@ -1,0 +1,4 @@
+# Workers Static Assets: files not to upload. The in-house basemap archive is
+# 124 MiB against a 25 MiB per-asset cap and needs HTTP Range, which the
+# asset runtime does not honour; in production it is served from R2.
+basemap/mt-basemap.pmtiles

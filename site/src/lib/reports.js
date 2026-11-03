@@ -403,8 +403,8 @@ async function profile(host, { county }, ctx) {
   }
   const s6 = sec(host, 'New lots against the statutory lines',
     'Sizes of parcels created by land division in this county over the whole series (condominium units and '
-    + 'coverage arriving are excluded). Under MCA 76-4-102(16) and 76-4-125 a parcel of 20 acres or more that is '
-    + 'exempt from the Platting Act escapes DEQ sanitation review; the Subdivision and Platting Act regulates '
+    + 'coverage arriving are excluded). Under MCA 76-4-102(25) a subdivision is a division creating a parcel under 20 acres, '
+    + 'and under 76-4-103 a parcel of 20 acres or more (exclusive of public roadways) is not subject to DEQ sanitation review; the Subdivision and Platting Act regulates '
     + 'divisions creating parcels under 160 acres. Mass just above a line is lots sized to clear it.');
   if (keys.length) {
     const refIdx = keys.findIndex((k) => k >= 20);
@@ -1026,8 +1026,8 @@ async function activity(host, { a, b }, ctx) {
   }
   const keys = [...bins.keys()].sort((x, y) => x - y);
   const s1 = sec(host, 'Newly created parcel sizes around the 20-acre line',
-    'Statewide, for the period. Under MCA 76-4-102(16) and 76-4-125, a parcel of 20 acres or more that is exempt from the '
-    + 'Platting Act escapes DEQ sanitation review, so mass just above the line is lots sized to clear it. The spikes at '
+    'Statewide, for the period. Under MCA 76-4-102(25) and 76-4-103 a parcel of 20 acres or more (exclusive of public roadways) '
+    + 'is not subject to DEQ sanitation review, so mass just above the line is consistent with lots sized to clear it. The spikes at '
     + 'exactly 40 and 160 acres elsewhere in the distribution are the survey grid (a quarter-quarter section is 40 acres), not review avoidance.');
   if (keys.length) {
     const refIdx = keys.findIndex((k) => k >= 20);

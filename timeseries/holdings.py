@@ -199,6 +199,16 @@ def _metrics(h: pd.DataFrame, key_col: str = "county_n") -> pd.DataFrame:
         row["gap_1_2"] = row["top1_acres"] - row["top2_acres"]
         for p in LORENZ_PCTS:
             row[f"top{p}pct_share"] = shares[p]
+        # The same concentration measures on the maximal tier, so a change in
+        # CLO4 or the Gini can be read against the identity decisions it rests
+        # on: a figure that moves between the tiers depends on a pending match.
+        gm_sorted = np.sort(gm_big)[::-1]
+        max_shares = _top_shares(gm, LORENZ_PCTS)
+        row["clo4_max"] = float(gm_sorted[:4].sum() / gm_sorted.sum()) if gm_sorted.sum() > 0 else float("nan")
+        row["large_mean_max"] = float(gm_big.mean()) if len(gm_big) else 0.0
+        row["gini_private_max"] = _gini(gm)
+        for p in LORENZ_PCTS:
+            row[f"top{p}pct_share_max"] = max_shares[p]
         for i, lab in enumerate(SIZE_LABELS):
             sub = g[g["size_class"] == i]
             row[f"n_{lab}"] = int(len(sub))

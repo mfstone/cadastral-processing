@@ -9,15 +9,19 @@
   },
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "node scripts/build-prompt.mjs && astro build",
+    "prompt": "node scripts/build-prompt.mjs",
+    "prompt:count": "node scripts/build-prompt.mjs --count",
     "preview": "astro preview --host 127.0.0.1",
     "data": "cd .. && .venv/bin/python -m timeseries.publish",
     "tiles": "cd .. && .venv/bin/python -m timeseries.tiles",
+    "test:unit": "node --test test/*.test.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "reports:pdf": "node scripts/shot-reports.mjs",
     "test:palette": "node scripts/palette-audit.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.4.0",
     "astro": "^5.6.1",
     "hyparquet": "^1.17.1",
     "hyparquet-compressors": "1.1.2",

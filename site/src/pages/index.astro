@@ -23,6 +23,8 @@ import '../styles/viz.css';
                      border-radius:6px;background:var(--surface-1);color:var(--ink-2);cursor:pointer">
         ◐
       </button>
+      <button id="assist-toggle" hidden aria-expanded="false" aria-controls="assist"
+              title="Ask a question; the assistant sets the dashboard and answers from its tables">Ask</button>
     </header>
 
     <!-- Filters in one row above the content. -->
@@ -76,7 +78,8 @@ import '../styles/viz.css';
 
     <main>
       <div id="mapwrap">
-        <div id="map"></div>
+        <div id="map" role="region" aria-label="Map of Montana"></div>
+        <p id="map-desc" class="sr-only" aria-live="polite"></p>
         <div id="legend"></div>
         <details id="layers" open>
           <summary>Layers</summary>
@@ -96,6 +99,27 @@ import '../styles/viz.css';
       </div>
       <div id="panel"></div>
     </main>
+
+    <!-- The assistant's drawer; filled by src/assistant/panel.js on first open,
+         and shown at all only where /api/assistant/health answers. -->
+    <aside id="assist" hidden aria-label="Assistant">
+      <div class="assist-head">
+        <h2>Ask about the map</h2>
+        <button id="assist-new" type="button" title="Start a new conversation">New</button>
+        <button id="assist-close" type="button" aria-label="Close the assistant">&times;</button>
+      </div>
+      <div id="assist-log" role="log" aria-live="polite" aria-relevant="additions"></div>
+      <div id="assist-suggest" aria-label="Suggested questions"></div>
+      <form id="assist-form">
+        <textarea id="assist-q" rows="2" placeholder="Ask about Montana’s parcels, owners and housing…"
+                  aria-label="Your question"></textarea>
+        <div class="assist-actions">
+          <button id="assist-send" type="submit">Ask</button>
+          <button id="assist-stop" type="button" hidden>Stop</button>
+        </div>
+      </form>
+      <p id="assist-privacy" class="hint"></p>
+    </aside>
   </div>
 
   <script>

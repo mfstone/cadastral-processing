@@ -657,6 +657,41 @@ export class UnitMap {
     }
   }
 
+  /** The camera, for the state and the assistant: centre, zoom and the
+   *  visible bbox, rounded to what a URL can carry. */
+  getView() {
+    const c = this.map.getCenter();
+    const b = this.map.getBounds();
+    const r4 = (v) => Math.round(v * 1e4) / 1e4;
+    return { center: [r4(c.lng), r4(c.lat)], zoom: Math.round(this.map.getZoom() * 100) / 100,
+             bbox: [r4(b.getWest()), r4(b.getSouth()), r4(b.getEast()), r4(b.getNorth())] };
+  }
+
+  /** Move the camera and resolve, with the settled view, once it has
+   *  stopped: null fits the state, {bbox} fits a box, {center, zoom} eases
+   *  to a point. A timeout stands in for a moveend that never comes. */
+  setView(view, { duration = 600 } = {}) {
+    const m = this.map;
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        m.off('moveend', finish);
+        resolve(this.getView());
+      };
+      m.on('moveend', finish);
+      setTimeout(finish, duration + 1500);
+      if (!view) m.fitBounds(MT_BOUNDS, { padding: 18, duration });
+      else if (view.bbox) m.fitBounds([[view.bbox[0], view.bbox[1]], [view.bbox[2], view.bbox[3]]],
+        { padding: 30, maxZoom: view.maxZoom ?? 11, duration });
+      else m.easeTo({ center: view.center, zoom: view.zoom, duration });
+    });
+  }
+
+  /** The basemap actually in use: 'none' after a failed fetch. */
+  getBasemap() { return this._basemapKind || 'none'; }
+
   fitTo(bbox) { if (bbox) this.map.fitBounds(bbox, { padding: 30, maxZoom: 11 }); }
 
   /** Re-read themed colours after a light/dark switch. */

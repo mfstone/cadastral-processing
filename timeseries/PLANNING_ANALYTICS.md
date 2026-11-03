@@ -170,9 +170,10 @@ geometry signature, not a behavioural one.
 
 One edge survives the control, and it is the one with a statutory basis.
 
-Under **MCA 76-4-102(16)** and **76-4-125**, a parcel of 20 acres or more that is
-exempt from the Subdivision and Platting Act is **not subject to DEQ sanitation
-review**; divisions creating parcels under 20 acres go to DEQ, while 20–160 acres
+Under **MCA 76-4-102(25)** a subdivision is a division creating a parcel under 20
+acres, and under **76-4-103** a parcel of 20 acres or more (exclusive of public
+roadways) is **not subject to DEQ sanitation review** (citations corrected
+2026-11-03; the earlier text cited 76-4-102(16) and 76-4-125); divisions creating parcels under 20 acres go to DEQ, while 20–160 acres
 go to the local health department. Crossing 20 acres therefore changes which
 agency reviews the division, or whether anyone does.
 

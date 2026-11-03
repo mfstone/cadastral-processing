@@ -1,0 +1,17 @@
+# Exact environment of the published bundle (importlib.metadata; the venv has no pip).
+# Python 3.12.12. GDAL via pyogrio: see manifest.json environment.gdal.
+certifi==2026.6.17
+geopandas==1.1.4
+numpy==2.5.0
+packaging==26.2
+pandas==3.0.4
+pip==26.2.2
+pyarrow==24.0.0
+pymssql==2.3.13
+pyogrio==0.13.0
+pyproj==3.7.2
+python-dateutil==2.9.0.post0
+RapidFuzz==3.14.5
+scipy==1.18.1
+shapely==2.1.2
+six==1.17.0

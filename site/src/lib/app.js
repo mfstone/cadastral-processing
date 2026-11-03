@@ -1,9 +1,10 @@
 /* ---------------------------------------------------------------------------
    app.js -- views, filters and wiring.
 
-   Eight views, each answering one of the planning questions the pipeline
+   Ten views, each answering one of the planning questions the pipeline
    supports, over one shared map surface and one shared time control, plus
-   the Reports and About tabs.
+   the Reports and About tabs. The state they share and the one function
+   that changes it are in state.js; the table accessors are in access.js.
 
    An honest limitation is built into the controls. The published tables carry
    MARGINALS at township grain, not the full joint cube -- the joint at that
@@ -14,64 +15,21 @@
    while implying otherwise.
 --------------------------------------------------------------------------- */
 
-import { loadJSON, loadTable, cube, flowCube, seriesOf, sumAt, valuesAt } from './data.js';
+import { loadJSON, loadTable, cube, seriesOf, sumAt } from './data.js';
 import { UnitMap, quantileBreaks, classify } from './map.js';
 import * as C from './charts.js';
 import { REPORTS, renderReport } from './reports.js';
+import { aboutSections } from './about.js';
+import { S, applyState, getState, describeState, toHash, fromHash, bindHost, syncSnapLabel, writeHash,
+  ERA_BOUNDS, LAYER_KEYS, LAYER_IDS } from './state.js';
+import { twpCube, countyCube, countyFlow, twpFlow, activeStock, twpIds, countyIds, selectedUnits, unitFeatureId,
+  snapLabels, ivLabels, unavailableAt, FIELD_LABEL, num, CD_COLS, YB_COLS, WITNESS_TWP, WITNESS_CTY, shortCond,
+  ratedOf, belowShare, pre1980Share, pctOf, camaTables, pointAt, pointMeta, taxYearOf, camaSum, condByDecade,
+  timingSeries, transitionSeries, holdingsCube, hAt, holdingUnits, countyLabel, topRows, maskLowCoverage,
+} from './access.js';
 
-const S = {
-  dim: null, meta: null, map: null,
-  snap: 0, level: 'township', measure: 'parcels', view: 'ladder',
-  maskLow: true, selection: new Set(), originState: '',
-  twpByKey: new Map(), twpById: new Map(),
-  cubes: {}, flows: {}, nSnaps: 0, nTwp: 0, nIv: 0,
-  // The Reports view: which document, for which county or period, and
-  // whether one has been composed (so a re-render redraws it).
-  report: { kind: 'profile', county: 6, a: 0, b: 0, generated: false },
-  reportGen: 0, reportOut: null,
-};
 const $ = (id) => document.getElementById(id);
 
-/* --------------------------------------------------------------- data access */
-async function twpCube(topic) {
-  if (S.cubes[topic]) return S.cubes[topic];
-  const t = await loadTable(`twp_${topic}`);
-  S.cubes[topic] = cube(t, { nUnits: S.nTwp + 1, nSnaps: S.nSnaps, delta: S.dim.delta_coded });
-  return S.cubes[topic];
-}
-async function twpFlow() {
-  if (S.flows.twp) return S.flows.twp;
-  const t = await loadTable('twp_flow');
-  S.flows.twp = flowCube(t, { nUnits: S.nTwp + 1, nIntervals: S.nIv });
-  return S.flows.twp;
-}
-async function countyCube() {
-  if (S.cubes.county) return S.cubes.county;
-  const t = await loadTable('county_stock');
-  S.cubes.county = cube(t, { nUnits: 57, nSnaps: S.nSnaps, keyCol: 'county_n', delta: false });
-  return S.cubes.county;
-}
-async function countyFlow() {
-  if (S.flows.county) return S.flows.county;
-  const t = await loadTable('county_flow');
-  S.flows.county = flowCube(t, { nUnits: 57, nIntervals: S.nIv, keyCol: 'county_n' });
-  return S.flows.county;
-}
-
-/** Active stock cube for the chosen unit level, plus its id list. */
-async function activeStock(topic) {
-  if (S.level === 'county') return { c: await countyCube(), ids: countyIds() };
-  return { c: await twpCube(topic), ids: twpIds() };
-}
-const twpIds = () => S.dim.townships.map((t) => t.id);
-const countyIds = () => S.dim.counties.map((c) => c.code);
-const selectedUnits = () => (S.selection.size ? Array.from(S.selection) : null);
-
-function unitFeatureId(u) {
-  return S.level === 'county' ? u : (S.twpById.get(u)?.tr ?? null);
-}
-const snapLabels = () => S.dim.snapshots.map((s) => s.date.slice(0, 7));
-const ivLabels = () => S.dim.intervals.map((i) => S.dim.snapshots[i.a].date.slice(2, 7) + '→' + S.dim.snapshots[i.b].date.slice(2, 7));
 
 /* ----------------------------------------------------------------- painting */
 /* ------------------------------------------------------- bivariate paint */
@@ -116,13 +74,8 @@ function paintBivariate(c, ids, fx, fy, { x, y, note = '' }) {
   const f = (v) => C.fmtPct(v, 0);
   const classes = (b) => (b.length < 2 ? ['low', 'middle', 'high'] : [`under ${f(b[0])}`, `${f(b[0])} to ${f(b[1])}`, `${f(b[1])} and over`]);
   const l = $('legend');
-  if (S.map && S.map.zoom >= 10.5 && $('lyr-parcels')?.checked && parcelLegendHTML()) {
-    l.innerHTML = parcelLegendHTML(); l.dataset.mode = 'parcel';
-  } else {
-    l.dataset.mode = '';
-    l.innerHTML = bivariateLegendHTML({ title: l.dataset.title || '', x: { ...x, classes: classes(bx) },
-      y: { ...y, classes: classes(by) }, note: `Classes are thirds of the units shown. ${note}`.trim() });
-  }
+  showUnitLegend(bivariateLegendHTML({ title: l.dataset.title || '', x: { ...x, classes: classes(bx) },
+    y: { ...y, classes: classes(by) }, note: `Classes are thirds of the units shown. ${note}`.trim() }));
   S.map.paint(colors);
   applyParcelStyle();
 }
@@ -185,7 +138,7 @@ function parcelLegendHTML() {
   if (!items.length && S.view !== 'condition') return '';
   const when = S.dim.snapshots[S.snap]?.date || 'the selected vintage';
   const title = `Parcels &mdash; ${VIEWS[S.view].parcelLegend || 'colour key'}`;
-  const head = S.parcelFill === false
+  const head = S.layers.parcelFill === false
     ? `<div class="title">${title}</div><div class="note">Fill off (Layers, under Parcels); the parcel lines and the outlines below remain.</div>`
     : S.view === 'condition'
     ? bivariateLegendHTML({ title, x: { label: 'poorer condition \u2192', name: 'DOR condition rating',
@@ -215,42 +168,46 @@ function parcelLegendHTML() {
 function refreshLegendForZoom() {
   if (!S.map) return;
   const l = $('legend');
-  const parcelScale = S.map.zoom >= 10.5 && $('lyr-parcels')?.checked;
+  const parcelScale = S.map.zoom >= 10.5 && S.layers.parcels;
   if (parcelScale) {
     const html = parcelLegendHTML();
     if (html) { l.innerHTML = html; l.dataset.mode = 'parcel'; return; }
   }
-  if (l.dataset.mode === 'parcel') { l.dataset.mode = ''; render(); }
+  if (l.dataset.mode === 'parcel') {
+    l.dataset.mode = '';
+    // The unit legend was kept when it was last drawn, so zooming back out
+    // of the parcels restores it without re-rendering the whole view.
+    if (S.unitLegendHTML) l.innerHTML = S.unitLegendHTML; else render();
+  }
+}
+
+/** Show the unit-scale legend, or the parcel key if the map is at parcel
+ *  scale; either way the unit legend is kept for refreshLegendForZoom. */
+function showUnitLegend(html) {
+  const l = $('legend');
+  S.unitLegendHTML = html;
+  if (S.map && S.map.zoom >= 10.5 && S.layers.parcels) {
+    const p = parcelLegendHTML();
+    if (p) { l.innerHTML = p; l.dataset.mode = 'parcel'; return; }
+  }
+  l.dataset.mode = '';
+  l.innerHTML = html;
 }
 
 function legend(ramp, lo, hi, diverging, reason) {
   const l = $('legend');
-  if (S.map && S.map.zoom >= 10.5 && $('lyr-parcels')?.checked) {
-    const html = parcelLegendHTML();
-    if (html) { l.innerHTML = html; l.dataset.mode = 'parcel'; return; }
-  }
-  l.dataset.mode = '';
   // A blank surface must name its own cause. "Coverage mask" is the wrong
   // explanation when the vintage's field is simply dead.
   const why = reason
     ? `<div class="note"><strong>No data at this snapshot.</strong> ${reason}</div>`
     : '<div class="note">Grey = no comparable data (coverage mask), never zero.</div>';
-  l.innerHTML = `<div class="title">${l.dataset.title || ''}</div>
+  showUnitLegend(`<div class="title">${l.dataset.title || ''}</div>
     ${reason ? '' : `<div class="ramp">${ramp.map((c) => `<i style="background:${c}"></i>`).join('')}</div>
     <div class="ends"><span>${lo}</span><span>${hi}</span></div>`}
     ${diverging && !reason ? '<div class="note">Diverging around zero; grey midpoint is no change.</div>' : ''}
-    ${why}`;
+    ${why}`);
 }
 
-/** Fields this vintage cannot report, from meta.field_availability. */
-function unavailableAt(snap) {
-  const rec = (S.meta.field_availability || []).find((r) => r.snapshot === snap);
-  return rec ? rec.unavailable : [];
-}
-const FIELD_LABEL = {
-  development_ladder: 'development ladder',
-  agricultural_acreage: 'agricultural acreage',
-};
 
 /** A prominent card explaining a vintage-specific gap. */
 function unavailableCard(panel, field) {
@@ -439,6 +396,7 @@ const VIEWS = {};
 VIEWS.ladder = {
   parcelLegend: 'development stage',
   label: 'Development',
+  summary: 'The development ladder: platted only, addressed, built; absorption of each creation cohort; dormant platted inventory.',
   legend: 'Share of parcels addressed but unbuilt',
   async render(panel) {
     const dev = await twpCube('dev');
@@ -532,97 +490,6 @@ VIEWS.ladder = {
    component from 2015, when the composite was retired by copying it into
    its components; each point names its field.
 */
-const num = (v) => (typeof v === 'bigint' ? Number(v) : Number(v ?? 0));
-const CD_COLS = [...Array(8).keys()].map((i) => `n_cd${i}`);
-const YB_COLS = [...Array(9).keys()].map((i) => `n_yb${i}`);
-const WITNESS_TWP = ['parcels_tested', 'improved_layer', 'struct_dor', 'agree_built', 'layer_only', 'dor_only',
-  'addr_tested', 'addr_hn_pt', 'addr_hn_nopt', 'addr_dw_res', 'addr_dw_nores'];
-const WITNESS_CTY = [...WITNESS_TWP, 'addr_pt_nohn', 'addr_res_nodw', 'hn_dwell', 'hn_nodwell', 'nohn_dwell', 'dormant_lt40', 'dormant_dwell',
-  'dormant_struct', 'dormant_permit', 'stage1', 'stage1_dwell', 'timing_n', 'timing_never', 'timing_ontime',
-  'born_dwell', 'born_older', 'insp_recent', 'value_n', 'value_equal'];
-const shortCond = (l) => String(l).replace(/ \(\d+\)/, '');
-const ratedOf = (o) => CD_COLS.reduce((a, n) => a + (o[n] || 0), 0);
-const belowShare = (o) => { const r = ratedOf(o); return r ? (100 * (o.n_cd0 + o.n_cd1 + o.n_cd2 + o.n_cd3)) / r : NaN; };
-const pre1980Share = (o) => { const t = YB_COLS.reduce((a, n) => a + (o[n] || 0), 0); return t ? (100 * (o.n_yb0 + o.n_yb1 + o.n_yb2 + o.n_yb3 + o.n_yb4)) / t : NaN; };
-const pctOf = (n, d) => (d ? (100 * n) / d : NaN);
-
-async function camaTables() {
-  if (S.cama) return S.cama;
-  const [twp, cty, tim, cbd, tr] = await Promise.all([
-    loadTable('cama_township'), loadTable('cama_county'), loadTable('cama_timing'),
-    loadTable('cama_condition_decade'), loadTable('cama_transitions')]);
-  const si = cty.columns.indexOf('s');
-  const points = [...new Set(cty.rows.map((r) => num(r[si])))].sort((a, b) => a - b);
-  // One Map of unit -> row per point: small, and the slider only ever asks for one point.
-  const byPoint = (t, key) => {
-    const k = t.columns.indexOf(key), s = t.columns.indexOf('s');
-    const maps = new Map(points.map((p) => [p, new Map()]));
-    for (const r of t.rows) maps.get(num(r[s]))?.set(num(r[k]), r);
-    return maps;
-  };
-  S.cama = { twp, cty, tim, cbd, tr, points, twpBy: byPoint(twp, 'u'), ctyBy: byPoint(cty, 'county_n') };
-  return S.cama;
-}
-/** The series point at or before a snapshot index, else the first. */
-const pointAt = (T, snap) => { let p = T.points[0]; for (const s of T.points) if (s <= snap) p = s; return p; };
-const pointMeta = (s) => (S.meta.cama?.points || []).find((p) => p.s === s) || {};
-const taxYearOf = (s) => pointMeta(s).tax_year ?? s;
-/** Sum the named columns of table `t` over the rows keyed by `units`. */
-function camaSum(t, byMap, units, names) {
-  const out = {};
-  const ci = names.map((n) => t.columns.indexOf(n));
-  for (const n of names) out[n] = 0;
-  if (!byMap) return out;
-  for (const u of units) {
-    const r = byMap.get(u);
-    if (!r) continue;
-    names.forEach((n, i) => { if (ci[i] >= 0) out[n] += num(r[ci[i]]); });
-  }
-  return out;
-}
-/** Condition x year-built-bin counts at one point, summed over county rows (0 = statewide). */
-function condByDecade(T, counties, s) {
-  const c = (n) => T.cbd.columns.indexOf(n);
-  const ki = c('county_n'), bi = c('yb_bin'), di = c('cond'), ni = c('dwellings'), si = c('s');
-  const want = new Set(counties);
-  const grid = [...Array(8)].map(() => new Float64Array(9));
-  for (const r of T.cbd.rows) {
-    if (num(r[si]) !== s || !want.has(num(r[ki]))) continue;
-    grid[num(r[di])][num(r[bi])] += num(r[ni]);
-  }
-  return grid;
-}
-/** Year-built cohort x ladder lag at one point, summed over county rows (0 = statewide). */
-function timingSeries(T, counties, s) {
-  const c = (n) => T.tim.columns.indexOf(n);
-  const ki = c('county_n'), yi = c('yb'), si = c('s');
-  const want = new Set(counties);
-  const names = ['earlier', 'on_time', 'late1', 'late2plus', 'never'];
-  const by = new Map();
-  for (const r of T.tim.rows) {
-    if (num(r[si]) !== s || !want.has(num(r[ki]))) continue;
-    const y = num(r[yi]);
-    if (!by.has(y)) by.set(y, Object.fromEntries(names.map((n) => [n, 0])));
-    const o = by.get(y);
-    for (const n of names) o[n] += num(r[c(n)]);
-  }
-  const years = [...by.keys()].sort((a, b) => a - b);
-  return { years, series: names.map((n) => years.map((y) => by.get(y)[n])) };
-}
-/** Point-to-point transitions summed over county rows (0 = statewide). */
-function transitionSeries(T, counties) {
-  const c = (n) => T.tr.columns.indexOf(n);
-  const want = new Set(counties);
-  const by = new Map();
-  for (const r of T.tr.rows) {
-    if (!want.has(num(r[c('county_n')]))) continue;
-    const key = `${num(r[c('s_from')])}>${num(r[c('s')])}`;
-    if (!by.has(key)) by.set(key, { from: num(r[c('s_from')]), to: num(r[c('s')]), n: 0, same: 0, worse: 0, better: 0, worse2plus: 0, better2plus: 0 });
-    const o = by.get(key);
-    for (const k of ['n', 'same', 'worse', 'better', 'worse2plus', 'better2plus']) o[k] += num(r[c(k)]);
-  }
-  return [...by.values()].sort((a, b) => a.to - b.to);
-}
 function witnessTiles(host, w, { full, statewide }) {
   const vacantBoth = w.parcels_tested - w.improved_layer - w.dor_only;
   const agree = pctOf(w.agree_built + vacantBoth, w.parcels_tested);
@@ -630,6 +497,13 @@ function witnessTiles(host, w, { full, statewide }) {
   const items = [
     { value: C.fmtPct(agree), label: 'parcels where the two records agree',
       detail: `${C.fmtInt(w.parcels_tested)} parcels tested${sw}` },
+    // Precision and recall of the layer's built call against the DOR's own
+    // structures: a reconciliation of two products of one source system,
+    // not an independent check, and labelled so.
+    { value: C.fmtPct(pctOf(w.agree_built, w.agree_built + w.layer_only)), label: 'built per the layer, with a DOR structure (precision)',
+      detail: 'reconciliation with the DOR’s own records, not an independent check' },
+    { value: C.fmtPct(pctOf(w.agree_built, w.agree_built + w.dor_only)), label: 'DOR structures the layer calls built (recall)',
+      detail: `${C.fmtInt(w.dor_only)} DOR structures the layer missed` },
     { value: C.fmtInt(w.layer_only), label: 'built per the parcel layer, no DOR structure',
       detail: `${C.fmtPct(pctOf(w.layer_only, w.improved_layer))} of parcels with a building value` },
     { value: C.fmtInt(w.dor_only), label: 'DOR structure, parcel layer unimproved',
@@ -665,6 +539,7 @@ function witnessTiles(host, w, { full, statewide }) {
 VIEWS.condition = {
   parcelLegend: 'dwelling condition and year built, DOR records (newest point)',
   label: 'Condition',
+  summary: 'Condition and age of the housing stock from the DOR building records at eight tax years, and those records as a witness to the ladder.',
   legend: 'Condition and age of the housing stock',
   async render(panel) {
     const T = await camaTables();
@@ -848,8 +723,13 @@ async function absorptionCard(panel) {
     }
     return out;
   });
+  const h10 = S.meta.absorption_survival?.horizons?.['10y'];
+  const censor = h10
+    ? ` Counting a lot that left the record as a competing outcome (Aalen–Johansen), the median cohort has ${C.fmtPct(100 * h10.ci_built_median, 0)} of its lots built by ten years (cohorts ${C.fmtPct(100 * h10.ci_built_min, 0)} to ${C.fmtPct(100 * h10.ci_built_max, 0)}).`
+    : '';
   const card = C.card(panel, 'Absorption: share of a cohort built, by age',
-    'Of the lots created at each vintage, the share carrying an assessed building N years later. Curves plateau near 50–58%. '
+    'Of the lots created at each vintage, the share carrying an assessed building N years later. Curves level off near 50–58%: '
+    + 'a lot unbuilt at its last export is unbuilt so far, not never, so these curves are right-censored.' + censor + ' '
     + 'Two things the DOR’s building records showed (Condition view): a third of new lots that carry a house were split off '
     + 'around an existing one, so the curves start part-full; and a January export carries the previous year’s roll, so a '
     + 'cohort’s built share can run up to a year behind.');
@@ -893,6 +773,7 @@ async function dormantCard(panel) {
 VIEWS.ownership = {
   parcelLegend: 'tenure',
   label: 'Ownership',
+  summary: 'Tenure (public domain, tribal trust, private), owner distance from the land by mailing address, the reservation checkerboard, and where out-of-state owners mail from.',
   legend: 'Out-of-state share of parcels',
   async render(panel) {
     const { c, ids } = await activeStock('locality');
@@ -1029,6 +910,7 @@ async function originRankCard(panel) {
 VIEWS.fragmentation = {
   parcelLegend: 'parcel size',
   label: 'Fragmentation',
+  summary: 'Acreage by parcel-size class, the share of acreage in parcels under 40 acres, and agricultural-use acreage.',
   legend: 'Share of acreage in parcels under 40 acres',
   async render(panel) {
     const { c, ids } = await activeStock('size');
@@ -1085,6 +967,7 @@ VIEWS.fragmentation = {
 VIEWS.churn = {
   parcelLegend: 'private parcels',
   label: 'Churn',
+  summary: 'Owner turnover per year on persisting parcels, interstate transfers against address-only edits, and condominium units created.',
   legend: 'Owner change, % of persisting parcels per year',
   async render(panel) {
     const f = S.level === 'county' ? await countyFlow() : await twpFlow();
@@ -1154,6 +1037,7 @@ VIEWS.churn = {
 VIEWS.thresholds = {
   parcelLegend: 'size against the 20-acre line',
   label: 'Thresholds',
+  summary: 'New lots per thousand parcels per year, and the sizes of newly created parcels around the 20-acre statutory line.',
   legend: 'New lots per 1,000 parcels per year',
   async render(panel) {
     const f = S.level === 'county' ? await countyFlow() : await twpFlow();
@@ -1185,8 +1069,7 @@ VIEWS.thresholds = {
     const t = await loadTable('size_histogram');
     const col = (n) => t.columns.indexOf(n);
     const lo = col('bin_lo'), hi = col('bin_hi'), pr = col('parcels'), ivc = col('interval');
-    const era = $('era')?.value || 'all';
-    const bounds = era === 'early' ? [0, 11] : era === 'mid' ? [11, 20] : era === 'late' ? [20, 28] : [0, 99];
+    const bounds = ERA_BOUNDS[S.era] || ERA_BOUNDS.all;
     const bins = new Map();
     for (const r of t.rows) {
       const i = Number(r[ivc]);
@@ -1197,8 +1080,17 @@ VIEWS.thresholds = {
     }
     const keys = [...bins.keys()].sort((a, b) => a - b);
     const refIdx = keys.findIndex((k) => k >= 20);
+    // The headline ratio and its sensitivity come from the publish, never typed here.
+    const t20 = S.meta.thresholds?.['20_acre_edge'];
+    const s20 = S.meta.thresholds_sensitivity?.sensitivity?.['20']?.rel3;
+    const ratioTxt = t20 ? `${Number(t20.above_over_below).toFixed(2)}×` : 'about 1.6×';
+    const exclTxt = s20 && s20.ratio_excl_exact != null
+      ? ` (${Number(s20.ratio_excl_exact).toFixed(2)}× with the parcels of exactly 20 acres set aside)` : '';
+    const ctrl = S.meta.thresholds_sensitivity?.controls || {};
+    const cr = Object.entries(ctrl).filter(([k]) => Number(k) <= 50).map(([, v]) => Number(v.ratio)).filter(Number.isFinite);
+    const ctrlTxt = cr.length ? `the control sizes from 10 to 50 acres run ${Math.min(...cr).toFixed(2)}× to ${Math.max(...cr).toFixed(2)}×` : 'controls at 12, 15, 25, 30 and 50 acres sit near 1.0';
     const card = C.card(panel, 'Newly created parcel sizes around the 20-acre line',
-      'Under MCA 76-4-102(16) and 76-4-125, a parcel of 20 acres or more that is exempt from the Platting Act escapes DEQ sanitation review. Mass just above the line exceeds mass just below by about 2×, while controls at 12, 15, 25, 30, 50 and 100 acres all sit near 1.0.');
+      `Under MCA 76-4-102(25) a subdivision is a division creating a parcel under 20 acres, and under 76-4-103 a parcel of 20 acres or more (exclusive of public roadways) is not subject to DEQ sanitation review. Lots created just above the line outnumber those just below by ${ratioTxt}${exclTxt}, while ${ctrlTxt}. Bunching is a pattern consistent with lots sized to clear review; it does not establish the motive of any one division.`);
     C.histogram(card, {
       values: keys.map((k) => bins.get(k)),
       xLabels: keys.map((k) => (Number.isInteger(k) ? String(k) : k.toFixed(1))),
@@ -1225,18 +1117,12 @@ VIEWS.thresholds = {
    selection, so a multi-county selection draws them as small multiples while
    the counts and acres are summed.
 */
-async function holdingsCube() {
-  if (S.cubes.holdings) return S.cubes.holdings;
-  const t = await loadTable('holdings_county');
-  S.cubes.holdings = cube(t, { nUnits: 57, nSnaps: S.nSnaps, keyCol: 'county_n', snapCol: 's', delta: false });
-  return S.cubes.holdings;
-}
-const hAt = (c, m, u, s) => c.data[m]?.[u * c.nSnaps + s] ?? 0;
-const holdingUnits = () => (S.selection.size && S.level === 'county' ? Array.from(S.selection) : [0]);
-const countyLabel = (u) => (u === 0 ? 'Montana' : (S.dim.counties.find((c) => c.code === u)?.name ?? String(u)));
 
+/** The county level is coerced by state.js (normalize) before a render ever
+ *  starts; this is the guard that says so if it is not. */
 function forceCounty() {
   if (S.level === 'county') return;
+  console.warn('forceCounty: the level should have been coerced by applyState');
   S.level = 'county';
   const sel = $('level');
   if (sel) sel.value = 'county';
@@ -1262,31 +1148,11 @@ function reasonList(r) {
   if (r.oos) out.push('out-of-state');
   return out.join('; ');
 }
-async function topRows(units, s) {
-  const t = await loadTable('holdings_top');
-  const col = (n) => t.columns.indexOf(n);
-  const ci = col('county_n'), si = col('s');
-  const want = new Set(units);
-  const rows = [];
-  for (const r of t.rows) {
-    if (Number(r[si]) !== s || !want.has(Number(r[ci]))) continue;
-    rows.push({
-      county: Number(r[ci]), rank: Number(r[col('rank')]), name: r[col('display_name')],
-      city: r[col('display_city')], state: r[col('display_state')],
-      acres: Number(r[col('acres')]), acresMax: Number(r[col('acres_if_merged')]),
-      parcels: Number(r[col('n_parcels')]), status: Number(r[col('review_status')]),
-      names: Number(r[col('n_names')]), links: Number(r[col('pending_links')]),
-      strong: Number(r[col('strong')]) > 0, token: Number(r[col('token')]) > 0,
-      conflict: Number(r[col('conflict')]) > 0, oos: Number(r[col('oos')]) > 0,
-      hash: r[col('group_hash')],
-    });
-  }
-  return rows.sort((a, b) => b.acres - a.acres);
-}
 
 VIEWS.holdings = {
   parcelLegend: 'owner\u2019s holding in the county',
   label: 'Holdings',
+  summary: 'Large private holdings (640+ acres) consolidated by owner within each county: counts, acreage, CLO4, size classes, concentration, and the ten largest named from the public record.',
   legend: 'Four-property concentration ratio (CLO4), % of large-holding acreage',
   async render(panel) {
     forceCounty();
@@ -1339,11 +1205,16 @@ VIEWS.holdings = {
 
     // CLO4 and the gap: per-county ratios.
     const k3 = C.card(panel, 'Four-property concentration ratio (CLO4)',
-      'Share of a county’s large-holding acreage held by its four largest holdings (Desmarais et al. 2015, as used by the paper). Averaged over the paper’s counties it rose from 14% to 16%.');
+      'Share of a county’s large-holding acreage held by its four largest holdings (Desmarais et al. 2015, as used by the paper). Averaged over the paper’s counties it rose from 14% to 16%. Where a maximal-tier line is drawn, the gap between the two is what the pending identity decisions could change: the tiers are two reconciliation procedures, not confidence bounds.');
     if (units.length === 1) {
       const u = units[0];
       const clo = Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'clo4', u, i));
-      C.lineChart(k3, { series: [clo], labels: ['CLO4'], colors: [cssVar('--cat-3')], xLabels: xl,
+      // The maximal tier's CLO4 beside the document tier's: the gap is what
+      // the pending identity decisions could change.
+      const cloMax = h.measures.includes('clo4_max')
+        ? Float64Array.from({ length: S.nSnaps }, (_, i) => 100 * hAt(h, 'clo4_max', u, i)) : null;
+      C.lineChart(k3, { series: cloMax ? [clo, cloMax] : [clo], labels: cloMax ? ['CLO4, document tier', 'maximal tier'] : ['CLO4'],
+        colors: cloMax ? [cssVar('--cat-3'), cssVar('--ord3-2')] : [cssVar('--cat-3')], xLabels: xl,
         fmt: (v) => C.fmtPct(v, 1), caption: `CLO4, ${countyLabel(u)}` });
       const t1 = Float64Array.from({ length: S.nSnaps }, (_, i) => hAt(h, 'top1_acres', u, i));
       const t2 = Float64Array.from({ length: S.nSnaps }, (_, i) => hAt(h, 'top2_acres', u, i));
@@ -1427,6 +1298,7 @@ async function regressionCard(panel) {
 VIEWS.review = {
   parcelLegend: 'review status of the owner\u2019s holding',
   label: 'Review',
+  summary: 'The large holdings that rest on an unmade identity or tenure decision, and how a review is recorded.',
   legend: 'Large holdings awaiting review, % of large holdings',
   async render(panel) {
     forceCounty();
@@ -1505,14 +1377,6 @@ VIEWS.review = {
   },
 };
 
-function maskLowCoverage(cov) {
-  if (!S.maskLow) return null;
-  return (u) => {
-    const a = cov.data.coverage_ok;
-    if (!a) return false;
-    return (a[u * cov.nSnaps + S.snap] ?? 1) <= 0;
-  };
-}
 function selectionNote() {
   if (!S.selection.size) return 'Statewide. Click a unit on the map to focus; shift-click to add.';
   const names = Array.from(S.selection).slice(0, 4).map((u) =>
@@ -1525,6 +1389,7 @@ function selectionNote() {
 /* 9. Reports -- the six printable documents, composed in reports.js */
 VIEWS.reports = {
   label: 'Reports',
+  summary: 'Six printable documents composed from the same tables: county profile, housing condition profile, statewide trends, large-holdings update, review worksheet (CSV), subdivision activity.',
   legend: 'Reports',
   full: true,
   async render(panel) {
@@ -1576,14 +1441,18 @@ function reportForm(panel) {
     $('rpt-pdf').hidden = !(S.report.generated && S.reportOut && S.report.kind === k);
     $('rpt-csv').hidden = !(S.report.generated && S.reportOut?.csv && S.report.kind === k);
   };
-  $('rpt-kind').addEventListener('change', () => { S.report.kind = $('rpt-kind').value; sync(); });
-  $('rpt-county').addEventListener('change', () => { S.report.county = Number($('rpt-county').value) || null; });
-  $('rpt-a').addEventListener('change', () => { S.report.a = Number($('rpt-a').value); });
-  $('rpt-b').addEventListener('change', () => { S.report.b = Number($('rpt-b').value); });
-  $('rpt-go').addEventListener('click', () => {
-    S.report.kind = $('rpt-kind').value;
-    S.report.county = Number($('rpt-county').value) || null;
-    S.report.generated = true;
+  // The form's fields are state (a link can carry them); only Generate composes.
+  $('rpt-kind').addEventListener('change', () => {
+    applyState({ report: { kind: $('rpt-kind').value } }, { render: false });
+    sync();
+  });
+  $('rpt-county').addEventListener('change', () =>
+    applyState({ report: { county: Number($('rpt-county').value) || null } }, { render: false }));
+  $('rpt-a').addEventListener('change', () => applyState({ report: { a: Number($('rpt-a').value) } }, { render: false }));
+  $('rpt-b').addEventListener('change', () => applyState({ report: { b: Number($('rpt-b').value) } }, { render: false }));
+  $('rpt-go').addEventListener('click', async () => {
+    await applyState({ report: { kind: $('rpt-kind').value, county: Number($('rpt-county').value) || null,
+      a: Number($('rpt-a').value), b: Number($('rpt-b').value), generated: true } }, { render: false });
     generateReport();
   });
   $('rpt-pdf').addEventListener('click', printReport);
@@ -1644,182 +1513,47 @@ function printReport() {
   window.print();
 }
 
-/* 9. About -- how to use it, how to read it, where it comes from */
-const CONTACT_URL = 'https://www.epistemegeospatial.com/contact';
+/* 10. About -- how to use it, how to read it, where it comes from; the text
+   itself is in about.js, shared with the assistant's instructions. */
 VIEWS.about = {
   label: 'About',
+  summary: 'What the dashboard is, how to use it, how to read each view, where the data and analyses come from, and the caveats.',
   legend: 'About this dashboard',
   full: true,
   async render(panel) {
-    const first = S.dim.snapshots[0].date, last = S.dim.snapshots[S.nSnaps - 1].date;
-    const section = (title, html) => {
-      const c = C.card(panel, title);
+    for (const sec of aboutSections(S.dim, S.meta)) {
+      const c = C.card(panel, sec.title);
       const d = document.createElement('div');
       d.className = 'about';
-      d.innerHTML = html;
+      d.innerHTML = sec.html;
       c.appendChild(d);
-    };
-
-    section('What this is', `
-      <p>Montana’s cadastral parcel layer, exported ${S.nSnaps} times between ${first} and ${last}
-      by the Montana State Library from the Department of Revenue’s records, read parcel by parcel
-      and compared vintage to vintage. Each export is a snapshot of every parcel in the state;
-      the differences between snapshots are the events: parcels created and retired, owners
-      changed, buildings assessed. Statistics are aggregated to ${S.meta.townships.toLocaleString()}
-      PLSS townships and ${S.meta.counties} counties, and the newest export’s parcels themselves
-      (about 887,000) are drawn once the map is zoomed past level 10. Beside the parcel layer, the Department
-      of Revenue’s own building records, from three exports of its ORION appraisal database, are joined to the
-      parcels at eight tax years (2014, 2015 to 2018 and 2024 to 2026): the condition and age of the housing
-      stock, and an independent check on what the parcel layer says is built.</p>
-      <p>It was built by <a href="https://www.epistemegeospatial.com/">Episteme Geospatial</a> as a
-      working instrument for the questions the cadastral record can answer: where land is being
-      divided, who owns it and from where, what has actually been built on it, and how concentrated
-      large private holdings have become.</p>`);
-
-    section('How to use it', `
-      <ul>
-        <li><strong>Tabs</strong> choose a view. Each view paints the map and fills this panel with its charts.</li>
-        <li><strong>The snapshot slider</strong> picks a vintage; the map, the tiles of numbers and the charts’
-          cursor follow it. The date shown is the export date, not an assessment date. The Condition view has
-          building records at eight of the vintages and shows the nearest one at or before the slider.</li>
-        <li><strong>Unit</strong> switches the aggregate surface between PLSS townships and counties.
-          <strong>Measure</strong> switches between parcels and acres where a view supports both.</li>
-        <li><strong>Click a unit</strong> on the map to focus every chart on it; shift-click adds units;
-          <em>Clear selection</em> returns to the statewide figures. The key in the map’s corner names what is painted.</li>
-        <li><strong>Mask low coverage</strong> greys out units whose record is not yet complete in that vintage;
-          the early years arrived county by county.</li>
-        <li><strong>Zoom in.</strong> Past level 10 the aggregate surface gives way to the parcels, coloured by the
-          view’s parcel key. Click a parcel for its geocode and attributes; no owner information is shown.
-          Parcels that did not yet exist at the selected vintage are outlined by the period in which they first
-          appeared (2003 to 2005, 2006 to 2010, 2011 to 2015, 2016 to 2020, 2021 on), so the 2003 layer shows the
-          whole subdivision history at once and each later vintage what was still to come. Parcels first seen in
-          or before the vintage a county’s record arrived are that county’s baseline and are not outlined.</li>
-        <li><strong>Layers</strong> adds the township grid, county boundaries, roads with their names, building
-          footprints (the 2018 statewide set, with lidar footprints where flown), reservations, public lands and city limits. Under Parcels, the fill can be switched off to leave only the parcel lines and the period outlines. The basemap is outlines only;
-          the basemap menu offers an in-house Montana basemap built from the State Library’s frameworks (roads, water,
-          places, buildings and address points, served from this site) and an OpenStreetMap one; only the latter
-          fetches anything from a third party.</li>
-        <li><strong>Reports</strong> composes a printable document from the same tables: a county profile, a
-          housing condition profile, a statewide trends brief, a large-holdings update in the form of the paper, a
-          review worksheet as a CSV, and a subdivision-activity report for a chosen period. <em>Save as PDF</em> hands the page to the browser’s print
-          dialog, where “Save as PDF” is the destination; nothing leaves the browser.</li>
-        <li>The <strong>◐</strong> button toggles light and dark.</li>
-      </ul>`);
-
-    section('Reading the views', `
-      <p><strong>Development.</strong> Every parcel sits on a three-step ladder: <em>platted only</em> (no situs
-      address, no assessed building), <em>addressed</em> (a house number but no building value) and <em>built</em>
-      (an assessed building). The map shows the share of parcels addressed but unbuilt, the gap between
-      infrastructure and houses. The charts follow the ladder over time, the <em>absorption</em> of each creation
-      cohort (of the lots created at a vintage, the share carrying a building N years later) and the
-      <em>dormant inventory</em> (lots under 40 acres that have sat at the bottom of the ladder five years or more).
-      Dedicated common areas (open space, parks, HOA and condominium tracts) are counted apart and never climb.</p>
-      <p><strong>Condition.</strong> The Department of Revenue’s own building records, from its ORION appraisal
-      database, joined to the parcels on the geocode at eight tax years: the condition of the principal dwelling on
-      the DOR’s scale from Unsound (1) to Excellent (10), the earliest year built, and the same dwellings followed
-      from point to point. Through tax year 2014 the DOR filled CDU, the composite rating its dictionary describes;
-      at the 2015 reappraisal it retired the composite by copying it into four components and has rated them apart
-      since, so the rating is CDU for 2014 and the physical-condition component after, and the view says which. The map
-      draws condition and age together as one grid of nine colours, condition across and age up: thirds of the units
-      shown at township and county grain, fixed classes on the parcels (fair or worse, average, good or better; before
-      1980, 1980 to 2004, 2005 on). The
-      same records are an independent witness to the ladder, and the view reports each test with a count on both
-      sides at every point: whether a parcel the layer calls built has a structure on record, how soon after a
-      dwelling’s year built the ladder first showed a value, whether a dormant lot carries a dwelling after all.</p>
-      <p><strong>Ownership.</strong> Tenure (public domain, tribal trust, private) and the owner’s distance from
-      the land (the same place, the same county, elsewhere in Montana, out of state), both read from the mailing
-      address on the record. The map shows the out-of-state share; the charts add the trust-and-fee checkerboard
-      inside each reservation and where out-of-state owners mail from.</p>
-      <p><strong>Fragmentation.</strong> Acreage by parcel-size class, the share of acreage in parcels under 40
-      acres on the map, and agricultural-use acreage.</p>
-      <p><strong>Churn.</strong> How often parcels that persist from one vintage to the next change owner, per
-      year; transfers against address-only edits; and condominiumisation.</p>
-      <p><strong>Thresholds.</strong> The sizes of newly created parcels against the acreage lines in Montana’s
-      subdivision law. A pile-up just above a line is lots sized to clear it; the map shows new lots per
-      thousand parcels per year, and the era filter narrows the period.</p>
-      <p><strong>Holdings.</strong> A <em>holding</em> is one owner’s consolidated private acreage within a county;
-      <em>large</em> means 640 acres or more, one section. The map shows the four-property concentration ratio
-      (CLO4): the share of a county’s large-holding acreage held by its four largest. The charts count large
-      owners and their acreage, rank counties, class holdings by size, draw the Lorenz curve and Gini, and compare
-      the result with the published Table 1. Owners are identified by mailing address, with bridges for entities
-      and couples, and two tiers (document and maximal) bound what a manual review could change.</p>
-      <p><strong>Review.</strong> The method expects a reviewer. This view shows what one would decide: large
-      holdings that rest on an unmade decision (an entity merge, a token name, a pending match, an ORION bridge),
-      parcels on which the two public-land tests disagree, and how a decision is recorded.</p>`);
-
-    section('Where the analyses come from', `
-      <p>The holdings and review analyses follow Haggerty, Epstein, Gosnell, Rose and Stone (2022),
-      <em>Rural Land Concentration &amp; Protected Areas: Recent Trends from Montana and Greater Yellowstone</em>,
-      Society &amp; Natural Resources 35(6): 692–700,
-      <a href="https://doi.org/10.1080/08941920.2022.2038318">doi:10.1080/08941920.2022.2038318</a>, and the
-      consolidation methodology in its supplement. The Holdings view reports this dashboard’s residuals against
-      that paper’s Table 1 so the reproduction can be judged.</p>
-      <p>The development ladder, absorption, dormant inventory, churn and threshold analyses were constructed for
-      this dashboard from the same records, and the condition series and the witness tests from the Department of
-      Revenue’s building records. Each card’s caption states its definition, and the measured decisions behind them
-      are kept in the project’s findings log.</p>
-      <p>Data: the Montana Cadastral Framework (Montana State Library and Department of Revenue), ${S.nSnaps}
-      exports from ${first} to ${last}; the Montana Public Lands layer (State Library, 2026) for public domain by
-      area; reservations and incorporated cities (State Library); the Transportation Framework road centerlines
-      (State Library and Department of Transportation, June 2026); building footprints (Microsoft US Building
-      Footprints, 2018 release, ODbL, as redistributed by the State Library, merged with the State Library’s lidar
-      building footprints, 37 project areas); the Structures Framework’s address points (State Library, exported
-      2026-10-30), as a witness to the address rung and in the in-house basemap, which also draws the NHD
-      hydrography, GNIS place names, county and city boundaries and public lands (State Library); and the Department of Revenue’s ORION appraisal database in three exports (refreshed
-      2016-03-27, 2018-06-21 and 2026-06-24), for the building records behind the Condition view and the party
-      identifiers that bridge owners in the 2024 to 2026 vintages.</p>`);
-
-    section('Caveats', `
-      <ul>
-        <li>Vintages are export dates. 2002 is excluded (it lacks the counties where parcels are created) and no
-          2012 or 2015 export exists, so events spanning those gaps are dated to the interval.</li>
-        <li>Coverage arrived county by county through 2007; the comparable series begins in
-          ${S.meta.comparable_series_begins}. The coverage mask is on by default for that reason.</li>
-        <li>The 2009-07-05 export ships its value and agricultural columns entirely zero. Improvement status and
-          agricultural acreage are unknown there, not zero, and that vintage is left out of the charts that need them.</li>
-        <li>The ladder is probabilistic: a parcel with a house number carries an assessed building 89 to 91% of the
-          time, and some parcels carry a building with no house number. Checked against the Department of Revenue’s
-          building records, the parcel layer and the appraiser agree on whether a parcel is built on 99.5 to 99.7%
-          of parcels in every tax year tested.</li>
-        <li>The State Library’s address points are a third record: on the newest export they agree with the parcel
-          layer’s house number on 92% of parcels, place a residential point on 94% of parcels with a dwelling on
-          record, and their own geocode names the parcel that contains them 98.7% of the time. A multi-unit
-          building is usually one point. The framework has no history, so only the newest point carries the test.</li>
-        <li>Condition and year built are the appraiser’s record at eight tax years, not a continuous series, and
-          a rating is as current as the last inspection. An export dated January or February carries the previous
-          year’s roll, so a dwelling built in one year enters the ladder in the first export after the middle of the
-          next; the Condition view states the test in those terms.</li>
-        <li>Owner location is a mailing address, not a residence.</li>
-        <li>Public domain comes from one 2026 public-lands layer applied to every year, decided by area overlap;
-          tribal trust comes from owner names, because trust land is absent from that layer. A reservation boundary
-          is jurisdiction, not ownership.</li>
-        <li>Owner identity follows the method’s address key. No manual review has been performed; the Review view
-          shows the range a reviewer could move, and nothing is assumed in either direction.</li>
-        <li>Dedicated common areas are flagged by rule (the Non-Valued property type inside a subdivision, an
-          association or tract-named owner, or an open-space phrase in the legal description of an unbuilt parcel);
-          the rule touches 7.7% of platted-only subdivision lots under 40 acres and 0.3% of built parcels.</li>
-        <li>The parcels drawn are the newest export’s. A parcel split later shows as its pieces at every date;
-          the magenta outline is the one thing on the parcel map that follows the slider.</li>
-        <li>Parcel geometry is generalised for the tiles (about 2.4 m). Building footprints are Microsoft’s 2018
-          computer-generated set, which carries 79% of the parcels with an appraised dwelling statewide (89% of those
-          built before 2015, 11% of those built in 2018 or later), overlaid with the State Library’s lidar footprints
-          where lidar has flown, an eighth of the state; together 82% statewide and about 91% inside the flown areas.
-          A 2018 footprint inside a flown area that the lidar did not see is drawn lighter. Roads are as of June 2026.</li>
-        <li>Agricultural-use acreage is clamped to each parcel’s own area, since some exports report more
-          agricultural acres than mapped acres.</li>
-        <li>No parcel-level owner information is published. The largest holdings are named from the public
-          cadastral record.</li>
-      </ul>`);
-
-    section('Questions and comments', `
-      <p>This dashboard is a project of <a href="https://www.epistemegeospatial.com/">Episteme Geospatial</a>.
-      Comments, corrections and questions are welcome through the
-      <a href="${CONTACT_URL}">contact page</a>.</p>`);
+    }
+    // The temporal registry: what time each source speaks for.
+    if (Array.isArray(S.meta.temporal) && S.meta.temporal.length) {
+      const c = C.card(panel, 'What time each source speaks for',
+        'Observation time (when a source was captured) and effective time (when the condition held) are not the same, and the series combines sources from different ones.');
+      C.table(c, { headers: ['source', 'observed', 'applies to', 'what it supports'],
+        rows: S.meta.temporal.map((t) => [t.name, t.observation, t.applies_to, t.inference]),
+        caption: 'Temporal applicability of each input' });
+    }
+    // The release this bundle is: from the manifest the publish stage writes.
+    try {
+      const m = await loadJSON('manifest.json');
+      const c = C.card(panel, 'This release');
+      const d = document.createElement('div');
+      d.className = 'about';
+      d.textContent = `Release ${m.release}, built ${String(m.built_at || '').slice(0, 10)} from pipeline commit `
+        + `${String(m.pipeline?.git_commit || 'unknown').slice(0, 8)}${m.pipeline?.dirty ? ' (with uncommitted changes)' : ''}, `
+        + `code hash ${m.pipeline?.code_hash || '?'}; ${Object.keys(m.outputs || {}).length} published files and `
+        + `${(m.tiles?.files ?? 0).toLocaleString()} tiles, each with its hash in data/manifest.json.`;
+      c.appendChild(d);
+    } catch { /* a bundle published without a manifest */ }
   },
 };
 
 /* -------------------------------------------------------------------- wiring */
 async function render() {
+  S.renders++;
   const panel = $('panel');
   panel.textContent = '';
   const l = $('legend');
@@ -1832,6 +1566,12 @@ async function render() {
     c.appendChild(document.createTextNode(String(err && err.message ? err.message : err)));
   }
   if (!VIEWS[S.view].full) caveatCard(panel);
+  // A text description of the map for readers who cannot see it.
+  const md = $('map-desc');
+  if (md) {
+    md.textContent = VIEWS[S.view].full ? ''
+      : `Map: ${VIEWS[S.view].legend}, by ${S.level}. ${selectionNote()} Export ${S.dim.snapshots[S.snap]?.date || ''}.`;
+  }
 }
 
 function caveatCard(panel) {
@@ -1848,130 +1588,61 @@ function caveatCard(panel) {
   c.appendChild(d);
 }
 
+/* Every control is one line: it hands applyState a patch and state.js does
+   the rest -- validation, the map, the other controls, the render, the URL.
+   The controls are synced back from the state after each change, so no
+   control needs to know what another one did. */
 function buildControls() {
   const nav = $('nav');
   for (const [k, v] of Object.entries(VIEWS)) {
     const b = document.createElement('button');
     b.textContent = v.label;
+    b.dataset.view = k;
     b.setAttribute('aria-selected', String(k === S.view));
-    b.addEventListener('click', () => {
-      S.view = k;
-      for (const o of nav.children) o.setAttribute('aria-selected', String(o === b));
-      $('erawrap').hidden = k !== 'thresholds';
-      $('originwrap').hidden = k !== 'ownership';
-      $('level').disabled = (k === 'holdings' || k === 'review');
-      // The DOR's building records exist at eight points; the slider picks the
-      // nearest earlier one. The unit is the dwelling, not parcels or acres.
-      $('measure').disabled = (k === 'condition');
-      $('timewrap').title = k === 'condition' ? 'Building records exist at eight vintages (tax years 2014, 2015-2018, 2024-2026); the slider shows the nearest earlier one.' : '';
-      // About is prose and Reports is paper: the map and filters step aside,
-      // and the map is told its size again when they come back.
-      document.body.classList.toggle('full', !!VIEWS[k].full);
-      if (!VIEWS[k].full && S.map) setTimeout(() => S.map.map.resize(), 0);
-      render();
-    });
+    b.addEventListener('click', () => applyState({ view: k }));
     nav.appendChild(b);
   }
   const slider = $('snap');
   slider.max = String(S.nSnaps - 1);
-  slider.value = String(S.nSnaps - 1);
-  S.snap = S.nSnaps - 1;
-  const label = () => {
-    const d = S.dim.snapshots[S.snap].date;
-    const gone = unavailableAt(S.snap);
-    const el = $('snaplabel');
-    el.textContent = d;
-    el.title = gone.length
-      ? `${d}: this export ships ${gone.map((g) => FIELD_LABEL[g] || g).join(' and ')} `
-        + 'entirely zero, so those measures are unknown here.'
-      : d;
-    const mark = $('snapwarn');
-    if (mark) {
-      mark.hidden = !gone.length;
-      mark.title = el.title;
-    }
-  };
-  const setSnap = () => { S.snap = Number(slider.value); label(); render(); };
-  slider.addEventListener('input', () => { S.snap = Number(slider.value); label(); });
-  slider.addEventListener('change', setSnap);
-  label();
+  slider.value = String(S.snap);
+  // Dragging moves the date label only; the view follows on release.
+  slider.addEventListener('input', () => syncSnapLabel(Number(slider.value)));
+  slider.addEventListener('change', () => applyState({ snap: Number(slider.value) }));
+  syncSnapLabel(S.snap);
 
-  $('level').addEventListener('change', (e) => {
-    S.level = e.target.value;
-    S.selection.clear();
-    S.map.setLevel(S.level);
-    S.map.setSelection(new Set());
-    render();
-  });
-  $('measure').addEventListener('change', (e) => { S.measure = e.target.value; render(); });
-  $('mask').addEventListener('change', (e) => { S.maskLow = e.target.checked; render(); });
-  $('era').addEventListener('change', render);
-  $('basemap').addEventListener('change', (e) => S.map.setBasemap(e.target.value));
+  $('level').addEventListener('change', (e) => applyState({ level: e.target.value }));
+  $('measure').addEventListener('change', (e) => applyState({ measure: e.target.value }));
+  $('mask').addEventListener('change', (e) => applyState({ maskLow: e.target.checked }));
+  $('era').addEventListener('change', (e) => applyState({ era: e.target.value }));
+  $('basemap').addEventListener('change', (e) => applyState({ basemap: e.target.value }));
 
   const origin = $('origin');
   origin.appendChild(new Option('all origins', ''));
   for (const st of S.dim.states) {
     if (st && st.length === 2 && st !== 'MT') origin.appendChild(new Option(st, st));
   }
-  origin.addEventListener('change', (e) => { S.originState = e.target.value; render(); });
+  origin.addEventListener('change', (e) => applyState({ originState: e.target.value }));
 
-  // --- layer list ------------------------------------------------------
-  const status = $('lyr-status');
-  $('lyr-parcels').addEventListener('change', (e) => {
-    S.map.setParcelsVisible(e.target.checked);
-    $('lyr-parcel-fill').disabled = !e.target.checked;
-  });
-  // The fill is the view's parcel key; off, the thin parcel lines and the
-  // period outlines remain, which is the readable state when the outlines
-  // are what the reader came for.
-  $('lyr-parcel-fill').addEventListener('change', (e) => {
-    S.parcelFill = e.target.checked;
-    S.map.setParcelFill(S.parcelFill);
-    const l = $('legend');
-    if (l.dataset.mode === 'parcel') l.innerHTML = parcelLegendHTML();
-  });
-  $('lyr-townships').addEventListener('change', (e) => {
-    const v = e.target.checked ? 'visible' : 'none';
-    for (const id of ['township-line']) {
-      if (S.map.map.getLayer(id)) S.map.map.setLayoutProperty(id, 'visibility', v);
-    }
-  });
-  $('lyr-counties').addEventListener('change', (e) => {
-    const v = e.target.checked ? 'visible' : 'none';
-    if (S.map.map.getLayer('county-line')) S.map.map.setLayoutProperty('county-line', 'visibility', v);
-  });
-  $('lyr-roads').addEventListener('change', (e) => S.map.setReference('roads', e.target.checked));
-  $('lyr-buildings').addEventListener('change', (e) => S.map.setReference('buildings', e.target.checked));
-  for (const [kind, file, label] of [
-    ['reservations', 'reservations.geojson', 'reservations'],
-    ['publiclands', 'publiclands.geojson', 'public lands'],
-    ['cities', 'cities.geojson', 'city limits'],
-  ]) {
-    $(`lyr-${kind}`).addEventListener('change', async (e) => {
-      if (!e.target.checked) { S.map.setOverlay(kind, false); return; }
-      status.textContent = `loading ${label}\u2026`;
-      try {
-        await S.map.addOverlay(kind, `data/${file}`);
-        S.map.setOverlay(kind, true);
-        status.textContent = '';
-      } catch (err) {
-        status.textContent = `${label} unavailable`;
-        e.target.checked = false;
-      }
-    });
+  for (const k of LAYER_KEYS) {
+    const el = $(LAYER_IDS[k]);
+    if (el) el.addEventListener('change', (e) => applyState({ layers: { [k]: e.target.checked } }));
   }
+  $('clearsel').addEventListener('click', () => applyState({ selection: [] }));
+  $('theme').addEventListener('click', () => {
+    const cur = S.theme || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    applyState({ theme: cur === 'dark' ? 'light' : 'dark' });
+  });
+}
 
-  $('clearsel').addEventListener('click', () => {
-    S.selection.clear(); S.map.setSelection(new Set()); render();
-  });
-  const t = document.getElementById('theme');
-  t.addEventListener('click', () => {
-    const cur = document.documentElement.getAttribute('data-theme');
-    const next = cur === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    if (S.map) S.map.retheme();
-    render();
-  });
+/** The camera is state too: a moved map writes itself into the URL. */
+let moveTimer = null;
+function onMoveEnd() {
+  clearTimeout(moveTimer);
+  moveTimer = setTimeout(() => {
+    const v = S.map.getView();
+    S.mapView = { center: v.center, zoom: v.zoom };
+    writeHash();
+  }, 250);
 }
 
 export async function boot() {
@@ -1983,6 +1654,9 @@ export async function boot() {
   S.nSnaps = dim.snapshots.length;
   S.nIv = dim.intervals.length;
   S.nTwp = dim.townships.length;
+  // The boundaries are kept: place lookups need them and loadJSON does not cache.
+  S.geo = { townships, counties };
+  S.snap = S.nSnaps - 1;
   // The activity report defaults to the last five years or so of the series.
   S.report.a = Math.max(0, S.nSnaps - 6);
   S.report.b = S.nSnaps - 1;
@@ -2033,22 +1707,32 @@ export async function boot() {
     onSelect: (level, id, props, additive) => {
       const u = level === 'county' ? Number(id) : (S.twpByKey.get(id)?.id ?? null);
       if (u == null) return;
-      if (!additive) S.selection.clear();
-      if (S.selection.has(u)) S.selection.delete(u); else S.selection.add(u);
-      S.map.setSelection(new Set(Array.from(S.selection, unitFeatureId).filter((x) => x != null)));
-      render();
+      // A plain click selects the unit; shift-click toggles it in the set.
+      const sel = additive ? new Set(S.selection) : new Set();
+      if (sel.has(u)) sel.delete(u); else sel.add(u);
+      applyState({ selection: Array.from(sel) });
     },
   });
-  try {
-    // Test handle: the smoke and screenshot suites drive the map through this.
+  bindHost({
+    render,
+    viewInfo: (k) => (VIEWS[k]
+      ? { label: VIEWS[k].label, legend: VIEWS[k].legend, summary: VIEWS[k].summary || '', full: !!VIEWS[k].full }
+      : null),
+    refreshLegend: refreshLegendForZoom,
+  });
+  // Test handles: the smoke and screenshot suites drive the map and the
+  // state through these.
   window.__map = S.map;
   window.__state = S;
-  await S.map.init({ townships, counties });
-  // The street basemap is the default reference; if its origin is
-  // unreachable the map falls back to outlines only on its own.
-  if ($('basemap').value !== 'none') S.map.setBasemap($('basemap').value);
-  // The legend must follow the surface the reader is actually looking at.
-  S.map.map.on('zoomend', refreshLegendForZoom);
+  window.__dash = {
+    getState, applyState, describeState,
+    toHash: () => toHash(getState(), S.dim), fromHash: (h) => fromHash(h, S.dim),
+  };
+  try {
+    await S.map.init({ townships, counties });
+    // The legend must follow the surface the reader is actually looking at.
+    S.map.map.on('zoomend', refreshLegendForZoom);
+    S.map.map.on('moveend', onMoveEnd);
   } catch (err) {
     // The map failing must not take the charts with it.
     console.error('map init failed', err);
@@ -2057,5 +1741,33 @@ export async function boot() {
       + 'Map unavailable: ' + String(err && err.message ? err.message : err) + '</div>';
   }
   buildControls();
-  await render();
+  // On a phone the layer panel starts closed; the map is the point.
+  if (window.matchMedia('(max-width: 700px)').matches && $('layers')) $('layers').open = false;
+  // A pasted link is a state: it is applied before the first render, and a
+  // link edited in the address bar afterwards is applied the same way.
+  const { patch, warnings } = fromHash(location.hash, S.dim);
+  if (warnings.length) console.warn('link:', warnings.join('; '));
+  await applyState(patch, { source: 'hash', force: true });
+  window.addEventListener('hashchange', () => applyState(fromHash(location.hash, S.dim).patch, { source: 'hash' }));
+  enableAssistant();
+}
+
+/** The Ask button appears only where the assistant's endpoint answers: a
+ *  static deploy without the Worker gets the site's 404 page here and shows
+ *  nothing. The panel and the SDK's stream helper are a separate chunk,
+ *  loaded on the first click. */
+async function enableAssistant() {
+  let h;
+  try {
+    const r = await fetch('api/assistant/health', { cache: 'no-store' });
+    if (!r.ok || !/application\/json/.test(r.headers.get('content-type') || '')) return;
+    h = await r.json();
+  } catch { return; }
+  if (!h || !h.ok) return;
+  const t = $('assist-toggle');
+  t.hidden = false;
+  t.addEventListener('click', async () => {
+    const m = await import('../assistant/panel.js');
+    m.toggle(h);
+  });
 }

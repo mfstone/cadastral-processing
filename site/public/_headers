@@ -1,8 +1,11 @@
 # Cloudflare Pages headers.
 #
-# No external SCRIPTS: every dependency is bundled, so `script-src 'self'` stays
-# absolute. That is the clause that matters -- a compromised CDN script is the
-# realistic attack on a static site.
+# No external SCRIPTS but one: every dependency is bundled, so `script-src` is
+# 'self' plus challenges.cloudflare.com, which serves the Turnstile widget the
+# assistant's bot check uses (loaded only when the panel asks for a check, and
+# needing frame-src for the challenge iframe). That clause is the one that
+# matters -- a compromised CDN script is the realistic attack on a static site
+# -- and it widens by exactly that one Cloudflare origin.
 #
 # The one external origin is tiles.openfreemap.org, serving the basemap (vector
 # tiles via fetch, sprites and relief as images, glyph PBFs as fonts). It can
@@ -14,7 +17,7 @@
 # worker created from a blob URL.
 
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.openfreemap.org; font-src 'self' https://tiles.openfreemap.org; connect-src 'self' https://tiles.openfreemap.org; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.openfreemap.org; font-src 'self' https://tiles.openfreemap.org; connect-src 'self' https://tiles.openfreemap.org; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
@@ -29,9 +32,14 @@
 # deployed origin behave identically -- GDAL's COMPRESS=YES writes gzip bytes
 # that need a matching Content-Encoding, which `astro preview` does not apply,
 # so the map worked in production and failed locally (or the reverse) for no
-# visible reason. Cloudflare compresses them on the wire anyway.
+# visible reason. Cloudflare compresses them on the wire, but only for the
+# content types on its list: application/x-protobuf is on it and
+# application/vnd.mapbox-vector-tile is not (found 2026-11-02: the Billings
+# z11 tile would have gone out at 7 MB instead of 1.2). MapLibre does not
+# care which type a tile is served as. The smoke suite checks the deployed
+# origin's content-encoding on a tile.
 /data/parcels/*
-  Content-Type: application/vnd.mapbox-vector-tile
+  Content-Type: application/x-protobuf
   Cache-Control: public, max-age=86400
 
 # Label glyphs (Noto Sans, vendored; see fonts/LICENSE.txt). They never change.

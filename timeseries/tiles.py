@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import glob
 import logging
 import os
 import shutil
@@ -70,6 +71,7 @@ import numpy as np
 import pandas as pd
 
 from . import geocode as gc
+from . import events
 from . import holdings
 from . import reference
 from . import locality
@@ -122,8 +124,14 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
         columns=["parcel_id", "improved", "has_house_number", "acres", "is_common_area",
                  "owner_city", "situs_city", "owner_state", "county_n",
                  "owner_name_norm", "is_condo"])
-    pres = pd.read_parquet(f"{EVENT_DIR}/presence.parquet",
-                           columns=["parcel_id", "first_idx"])
+    # `born` is the start of the parcel's CURRENT occurrence: a geocode the
+    # DOR reissued after a gap is a new parcel under an old name, dated from
+    # its return, not from the name's first life (timeseries.events).
+    snap_dates = sorted(os.path.basename(q)[len("parcels_"):-len(".parquet")]
+                        for q in glob.glob(f"{SNAP_DIR}/parcels_*.parquet"))
+    occ = events.load_occurrences(EVENT_DIR)
+    pres = (events.occurrence_start(occ, snap_dates.index(date))
+            .rename("first_idx").reset_index())
     pl = pd.read_parquet(f"{PL_DIR}/public_{date}.parquet",
                          columns=["parcel_id", "on_public_land"])
     rs = pd.read_parquet(f"{RES_DIR}/res_{date}.parquet",

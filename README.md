@@ -151,9 +151,50 @@ cd site && npm install
 npm run data            # = python -m timeseries.publish
 npm run tiles           # = python -m timeseries.tiles (about 25 minutes)
 npm run build && npm run preview
-SMOKE_URL=http://127.0.0.1:4321 npm run test:smoke     # 107 checks
+SMOKE_URL=http://127.0.0.1:4321 npm run test:smoke     # 137 checks
+npm run test:unit       # the state, the query grammar, the resolver, the tool schemas (node --test)
 npm run reports:pdf     # composes every report through the print path (needs a preview on SMOKE_URL)
 ```
+
+Every control is state (`site/src/lib/state.js`): one `applyState()` validates a
+change, syncs the map and the controls, renders once and writes the URL hash, so
+a link such as `/#v=holdings&l=c&u=6&s=19` opens the dashboard in that state and
+the assistant below drives the same function the nav buttons do.
+
+### Assistant (`worker/`, `site/src/assistant/`)
+
+An **Ask** button opens a panel where a reader types a question; an agent sets the
+dashboard (view, vintage, county or township, filters, map) and answers from the
+same published tables, naming the export date for every figure and never an
+owner's name. The page runs the agent loop and the six tools (`tools.js`,
+`execute.js`): the model only ever sees tool results. A Cloudflare Worker
+(`worker/assistant.mjs`) is the pinned streaming proxy between the page and the
+Anthropic Messages API: it holds the key, the model, the generated system prompt
+and the tool list, validates that the page sent nothing but the conversation,
+rate-limits, caps the day's spend and relays the stream. The site still deploys
+and runs with no Worker at all: the button appears only where
+`/api/assistant/health` answers.
+
+```bash
+npm install                                  # at the repo root: wrangler and the SDK
+cp .dev.vars.example .dev.vars               # then put a real ANTHROPIC_API_KEY in it
+npm run build                                # site: regenerates src/assistant/prompt.json, then astro build
+npx wrangler dev                             # http://127.0.0.1:8787 serves site/dist + /api/assistant
+npm test                                     # unit tests for the page and the Worker
+npx wrangler secret put ANTHROPIC_API_KEY    # first deploy; also ASSISTANT_SALT, and TURNSTILE_SECRET if used
+npm run deploy                               # build, then wrangler deploy
+EVAL_URL=https://... node site/scripts/assistant-eval.mjs   # the 15 golden questions, live (costs money)
+```
+
+The system prompt is generated (`site/scripts/build-prompt.mjs`) from the rules
+(`site/src/assistant/rules.md`), the About tab's own prose (`site/src/lib/about.js`),
+the published caveats and dimensions, and a hand-written data dictionary
+(`site/src/assistant/dictionary.md`) that the build checks against the Parquet
+schemas. The knobs are `vars` in `wrangler.jsonc`: `ASSISTANT_MODEL`,
+`ASSISTANT_EFFORT`, the daily caps, `TURNSTILE_SITE_KEY` (the bot check is off until
+a key is set), and `ASSISTANT_ENABLED`. The in-house basemap archive is excluded
+from the asset upload (`site/public/.assetsignore`): it exceeds the 25 MiB per-asset
+cap and needs HTTP Range, so in production it is served from R2.
 
 ## Module map
 

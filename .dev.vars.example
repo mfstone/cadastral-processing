@@ -1,0 +1,6 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+ANTHROPIC_API_KEY=sk-ant-...
+# Any long random string; salts the daily IP hashes in logs and the budget.
+ASSISTANT_SALT=change-me
+# Only with a Turnstile site key in wrangler.jsonc vars.
+TURNSTILE_SECRET=

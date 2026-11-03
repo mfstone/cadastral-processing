@@ -2,8 +2,8 @@
 
 The whole of lineage -- creation, retirement, persistence and resurrection --
 falls out of one compact structure. For every parcel id ever observed, record a
-**presence bitmap**: bit *i* set when the parcel appears in snapshot *i*. With 29
-usable snapshots that is a single ``uint32`` per parcel, so the union of all
+**presence bitmap**: bit *i* set when the parcel appears in snapshot *i*. One
+``uint64`` per parcel holds 64 vintages (29 are in use), so the union of all
 vintages (~1.3 M ids) is a few megabytes, and every lineage question becomes a
 bit test:
 
@@ -15,9 +15,18 @@ resurrected            the set bits are not one contiguous run
 lifespan               last set bit - first set bit
 ====================  ==============================================
 
-Resurrection matters because the Department of Revenue reissues lot numbers:
-a geocode retired years earlier that reappears would otherwise read as a new
-parcel creation. Pairwise set algebra cannot see that; the bitmap gets it free.
+Resurrection matters because the Department of Revenue reissues lot numbers,
+and an identifier is not a parcel. A geocode that returns after a gap may be a
+different piece of land under an old name, so the model carries **occurrences**:
+each contiguous run of set bits is one occurrence with its own first and last
+snapshot (``occurrences.parquet``). The first snapshot of an occurrence is a
+creation, and the interval that sees it classifies it like any other, with
+``reused_id`` saying the name has a past and the published confidence left for
+the acreage test to decide. Everything downstream that dates a parcel -- the
+absorption cohorts, the dormant inventory, the ``born`` attribute on the tiles,
+the building-record witness -- reads the occurrence that contains the snapshot
+in question (:func:`occurrence_start`), never the identifier's first-ever
+appearance. Pairwise set algebra cannot see any of this; the bitmap gets it free.
 
 Events are **inferred**, and the vocabulary says so. A new lot number inside an
 existing block is not necessarily a legally defined subdivision -- it may be a
@@ -45,6 +54,9 @@ log = logging.getLogger("timeseries.events")
 
 IN_DIR = "data/snapshots"
 OUT_DIR = "data/events"
+
+# Snapshots the bitmap can hold; the dtype below must match. 29 are in use.
+BITMAP_BITS = 64
 
 # Acreage within a quarter-section is "conserved" inside this band. A genuine
 # division of land conserves area; a re-digitisation or a coverage gain does not.
@@ -84,50 +96,88 @@ def keys(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ presence
-def build_presence(dates: list[str], in_dir: str = IN_DIR) -> pd.DataFrame:
-    """One row per parcel id ever seen, with a bitmap of the snapshots it is in.
+def build_presence(dates: list[str], in_dir: str = IN_DIR) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One row per parcel id ever seen, with a bitmap of the snapshots it is in,
+    and one row per occurrence: a contiguous run of snapshots the id was in.
 
     Vectorised: a parcel id is unique within a snapshot, so each contributes a
     distinct power of two and ``np.bitwise_or.at`` folds 25.5 M (id, snapshot)
-    pairs into one ``uint32`` per parcel in a single pass.
+    pairs into one ``uint64`` per parcel in a single pass. Runs are found on
+    the unpacked bit matrix: a run starts where a bit is set and its
+    predecessor is not, and ends where a bit is set and its successor is not.
     """
-    if len(dates) > 32:
-        raise RuntimeError(f"{len(dates)} snapshots exceeds the uint32 bitmap width")
+    n = len(dates)
+    if n > BITMAP_BITS:
+        raise RuntimeError(f"{n} snapshots exceeds the {BITMAP_BITS}-bit bitmap width; "
+                           "widen BITMAP_BITS and the dtype before adding vintages")
+    if n > BITMAP_BITS - 8:
+        log.warning("presence bitmap: %d of %d bits in use; plan the widening", n, BITMAP_BITS)
     frames = []
     for i, date in enumerate(dates):
         ids = pd.read_parquet(_path(date, in_dir), columns=["parcel_id"])["parcel_id"]
         frames.append(pd.DataFrame({"parcel_id": ids,
-                                    "bit": np.uint32(1) << np.uint32(i)}))
+                                    "bit": np.uint64(1) << np.uint64(i)}))
     allv = pd.concat(frames, ignore_index=True)
     del frames
     log.info("  presence: %s (id, snapshot) pairs over %d snapshots",
-             f"{len(allv):,}", len(dates))
+             f"{len(allv):,}", n)
 
     codes, uniques = pd.factorize(allv["parcel_id"], sort=False)
-    bm = np.zeros(len(uniques), dtype="uint32")
-    np.bitwise_or.at(bm, codes, allv["bit"].to_numpy(dtype="uint32"))
+    bm = np.zeros(len(uniques), dtype="uint64")
+    np.bitwise_or.at(bm, codes, allv["bit"].to_numpy(dtype="uint64"))
     del allv, codes
 
-    n = len(dates)
-    idx = np.arange(n, dtype="uint32")
-    present = ((bm[:, None] >> idx[None, :]) & np.uint32(1)).astype(bool)
-    first = np.where(present.any(axis=1), present.argmax(axis=1), -1).astype("int8")
-    last = np.where(present.any(axis=1),
-                    n - 1 - present[:, ::-1].argmax(axis=1), -1).astype("int8")
+    idx = np.arange(n, dtype="uint64")
+    present = ((bm[:, None] >> idx[None, :]) & np.uint64(1)).astype(bool)
+    seen = present.any(axis=1)
+    first = np.where(seen, present.argmax(axis=1), -1).astype("int8")
+    last = np.where(seen, n - 1 - present[:, ::-1].argmax(axis=1), -1).astype("int8")
     n_present = present.sum(axis=1).astype("int8")
     span = (last.astype("int16") - first.astype("int16") + 1)
+    pad = np.zeros((len(present), 1), dtype=bool)
+    starts = present & ~np.concatenate([pad, present[:, :-1]], axis=1)
+    ends = present & ~np.concatenate([present[:, 1:], pad], axis=1)
+    n_occ = starts.sum(axis=1).astype("int8")
+    # The occurrence that holds the last set bit is the id's current life.
+    occ_first = np.where(seen, n - 1 - starts[:, ::-1].argmax(axis=1), -1).astype("int8")
     pres = pd.DataFrame({
         "parcel_id": np.asarray(uniques),
         "bitmap": bm,
         "first_idx": first,
         "last_idx": last,
         "n_present": n_present,
+        "n_occurrences": n_occ,
+        "occ_first_idx": occ_first,
         # A contiguous run has exactly `span` bits set. Anything else has a gap,
         # meaning the geocode was retired and later reissued by DOR -- which
         # would otherwise read as a fresh parcel creation.
         "resurrected": (n_present.astype("int16") != span) & (first >= 0),
     })
-    return pres
+    ri, sj = np.nonzero(starts)
+    _, ej = np.nonzero(ends)
+    occ = pd.DataFrame({
+        "parcel_id": np.asarray(uniques)[ri],
+        "occurrence": pd.Series(ri).groupby(ri).cumcount().to_numpy().astype("int8"),
+        "first_idx": sj.astype("int8"),
+        "last_idx": ej.astype("int8"),
+    })
+    return pres, occ
+
+
+def load_occurrences(event_dir: str = OUT_DIR) -> pd.DataFrame:
+    """The occurrence table written beside the presence bitmap."""
+    return pd.read_parquet(os.path.join(event_dir, "occurrences.parquet"))
+
+
+def occurrence_start(occ: pd.DataFrame, snap_idx: int) -> pd.Series:
+    """parcel_id -> the first snapshot of the occurrence present at ``snap_idx``.
+
+    This, not ``first_idx``, is the creation date of the parcel a snapshot
+    shows under that geocode: an identifier reissued after a gap names a new
+    parcel from its return.
+    """
+    sel = occ[(occ["first_idx"] <= snap_idx) & (occ["last_idx"] >= snap_idx)]
+    return sel.set_index("parcel_id")["first_idx"]
 
 
 # ------------------------------------------------------------- classification
@@ -248,7 +298,10 @@ def find_merges(a: pd.DataFrame, b: pd.DataFrame, q: pd.DataFrame) -> pd.DataFra
 
 
 def process_interval(date_a: str, date_b: str, idx: int, in_dir: str = IN_DIR,
-                     out_dir: str = OUT_DIR) -> dict:
+                     out_dir: str = OUT_DIR, seen: set | None = None) -> dict:
+    """One interval. ``seen`` holds every parcel id present in a snapshot
+    BEFORE ``date_a``, so a creation can be marked as the return of a reissued
+    identifier (``reused_id``)."""
     a = keys(load_snapshot(date_a, in_dir))
     b = keys(load_snapshot(date_b, in_dir))
     days = (pd.Timestamp(date_b) - pd.Timestamp(date_a)).days
@@ -256,6 +309,8 @@ def process_interval(date_a: str, date_b: str, idx: int, in_dir: str = IN_DIR,
     q = quarter_acreage(a, b)
     new = classify_interval(a, b)
     new = assign_confidence(new, q, a, b) if not new.empty else new
+    if not new.empty:
+        new["reused_id"] = new["parcel_id"].isin(seen).to_numpy() if seen else np.zeros(len(new), dtype=bool)
     merges = find_merges(a, b, q)
 
     a_ids = set(a["parcel_id"].to_numpy())
@@ -291,7 +346,7 @@ def process_interval(date_a: str, date_b: str, idx: int, in_dir: str = IN_DIR,
     keep = ["parcel_id", "township_key", "quarter_key", "block_key", "lot_key",
             "acres", "event_class", "confidence", "is_subdivision",
             "corroborating_name", "acres_ratio", "n_new_in_block",
-            "subdivision", "cert_survey", "improved", "is_condo"]
+            "subdivision", "cert_survey", "improved", "is_condo", "reused_id"]
     ev = new[[c for c in keep if c in new.columns]].copy() if not new.empty else pd.DataFrame(columns=keep)
     ev["interval"] = idx
     epath = os.path.join(out_dir, f"events_{idx:02d}_{date_a}_{date_b}.parquet")
@@ -299,6 +354,24 @@ def process_interval(date_a: str, date_b: str, idx: int, in_dir: str = IN_DIR,
     tpath = os.path.join(out_dir, f"transitions_{idx:02d}_{date_a}_{date_b}.parquet")
     trans.to_parquet(tpath, index=False, compression="zstd")
 
+    # Area conservation beyond the median: the tails say how often a
+    # quarter-section's acreage moved, and by how much, where events were read.
+    qq = q[(q["ac_a"] > 0) & (q["n_a"] > 0)]
+    ratio = qq["acres_ratio"].to_numpy(dtype="float64")
+    dev = np.abs(ratio - 1.0)
+    evq = set(new["quarter_key"].to_numpy()) if not new.empty else set()
+    inev = qq["quarter_key"].isin(evq).to_numpy()
+    conservation = {
+        "quarters": int(len(ratio)),
+        "p10": round(float(np.percentile(ratio, 10)), 4) if len(ratio) else None,
+        "p90": round(float(np.percentile(ratio, 90)), 4) if len(ratio) else None,
+        "p99": round(float(np.percentile(ratio, 99)), 4) if len(ratio) else None,
+        "within_1pct": round(float((dev <= 0.01).mean()), 4) if len(ratio) else None,
+        "within_5pct": round(float((dev <= 0.05).mean()), 4) if len(ratio) else None,
+        "event_quarters": int(inev.sum()),
+        "event_quarters_conserved": (round(float(qq.loc[inev, "conserved"].mean()), 4)
+                                     if inev.any() else None),
+    }
     cls_counts = (ev["event_class"].value_counts().to_dict() if "event_class" in ev else {})
     conf_counts = (ev["confidence"].value_counts().to_dict() if "confidence" in ev else {})
     qa = {
@@ -322,6 +395,8 @@ def process_interval(date_a: str, date_b: str, idx: int, in_dir: str = IN_DIR,
         "from_CA": int(((st_a == "CA") & state_changed & owner_changed).sum()),
         "quarter_acres_ratio_median": (round(float(q.loc[q["ac_a"] > 0, "acres_ratio"].median()), 5)
                                        if (q["ac_a"] > 0).any() else None),
+        "area_conservation": conservation,
+        "reused_ids": int(ev["reused_id"].sum()) if "reused_id" in ev and len(ev) else 0,
         "acres_a": float(a["acres"].sum()), "acres_b": float(b["acres"].sum()),
         "event_file": epath, "transition_file": tpath,
     }
@@ -346,9 +421,12 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(args.out, exist_ok=True)
 
     qa_all = []
+    seen: set = set()
     for i, (da, db) in enumerate(zip(dates, dates[1:])):
-        qa = process_interval(da, db, i, args.in_dir, args.out)
+        qa = process_interval(da, db, i, args.in_dir, args.out, seen=seen)
         qa_all.append(qa)
+        # Every id in snapshot i is "seen" for the intervals after it.
+        seen.update(pd.read_parquet(_path(da, args.in_dir), columns=["parcel_id"])["parcel_id"].to_numpy())
         log.info("[%2d] %s -> %s (%4dd)  created=%s retired=%s  subdiv=%s  "
                  "owner-chg=%s%%/yr  ratio=%s",
                  i, da, db, qa["days"], f"{qa['created']:,}", f"{qa['retired']:,}",
@@ -358,11 +436,23 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(qa_all, fh, indent=2, default=str)
 
     if args.presence:
-        pres = build_presence(dates, args.in_dir)
+        pres, occ = build_presence(dates, args.in_dir)
         ppath = os.path.join(args.out, "presence.parquet")
         pres.to_parquet(ppath, index=False, compression="zstd")
-        log.info("presence: %s parcels, %s resurrected, %s KB",
-                 f"{len(pres):,}", f"{int(pres['resurrected'].sum()):,}",
+        occ.to_parquet(os.path.join(args.out, "occurrences.parquet"), index=False, compression="zstd")
+        pqa = {
+            "snapshots": len(dates), "bitmap_bits": BITMAP_BITS,
+            "parcel_ids": int(len(pres)), "occurrences": int(len(occ)),
+            "resurrected_ids": int(pres["resurrected"].sum()),
+            "reused_id_creations": int(sum(q.get("reused_ids", 0) for q in qa_all)),
+            "note": "an identifier that returns after a gap is a new occurrence, counted as a "
+                    "creation from its return; cohorts, dormant ages and the tiles' `born` "
+                    "read the occurrence that contains the snapshot in question",
+        }
+        with open(os.path.join(args.out, "qa_presence.json"), "w") as fh:
+            json.dump(pqa, fh, indent=2)
+        log.info("presence: %s parcels, %s occurrences, %s resurrected ids, %s KB",
+                 f"{len(pres):,}", f"{len(occ):,}", f"{int(pres['resurrected'].sum()):,}",
                  f"{os.path.getsize(ppath) // 1024:,}")
     return 0
 

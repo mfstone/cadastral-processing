@@ -35,7 +35,7 @@ import pandas as pd
 
 from cadastral.schema import COUNTY_PREFIX
 
-from . import locality
+from . import locality, temporal, manifest
 from . import ownerclass as oc
 from . import sources
 from . import cama
@@ -123,6 +123,43 @@ def _write(df: pd.DataFrame, path: str, delta_on: str | None = None,
     d.to_parquet(path, **PARQUET_KW)
     return {"rows": int(len(d)), "cols": int(d.shape[1]),
             "bytes": os.path.getsize(path), "delta_coded": bool(delta_on)}
+
+
+def _lineage_meta() -> dict | None:
+    """The presence and event QA, summarised: what the identifier model saw."""
+    pq = os.path.join(EVENT_DIR, "qa_presence.json")
+    iq = os.path.join(EVENT_DIR, "qa_intervals.json")
+    if not (os.path.exists(pq) and os.path.exists(iq)):
+        return None
+    pres = json.load(open(pq))
+    ivs = json.load(open(iq))
+    cons = [q.get("area_conservation") for q in ivs if q.get("area_conservation")]
+    out = {
+        "snapshots": pres.get("snapshots"), "bitmap_bits": pres.get("bitmap_bits"),
+        "parcel_ids": pres.get("parcel_ids"), "occurrences": pres.get("occurrences"),
+        "resurrected_ids": pres.get("resurrected_ids"),
+        "reused_id_creations": pres.get("reused_id_creations"),
+        "note": pres.get("note"),
+    }
+    if cons:
+        p90 = [c["p90"] for c in cons if c.get("p90") is not None]
+        p99 = [c["p99"] for c in cons if c.get("p99") is not None]
+        w5 = [c["within_5pct"] for c in cons if c.get("within_5pct") is not None]
+        w1 = [c["within_1pct"] for c in cons if c.get("within_1pct") is not None]
+        ec = [c["event_quarters_conserved"] for c in cons if c.get("event_quarters_conserved") is not None]
+        out["area_conservation"] = {
+            "intervals": len(cons),
+            "median_ratio_range": [min(q["quarter_acres_ratio_median"] for q in ivs if q.get("quarter_acres_ratio_median") is not None),
+                                   max(q["quarter_acres_ratio_median"] for q in ivs if q.get("quarter_acres_ratio_median") is not None)],
+            "p90_range": [min(p90), max(p90)] if p90 else None,
+            "p99_range": [min(p99), max(p99)] if p99 else None,
+            "within_1pct_range": [min(w1), max(w1)] if w1 else None,
+            "within_5pct_range": [min(w5), max(w5)] if w5 else None,
+            "event_quarters_conserved_range": [min(ec), max(ec)] if ec else None,
+            "note": "per interval, over quarter-sections with parcels at both ends; the median "
+                    "says nothing about the tails, which are reported here",
+        }
+    return out
 
 
 def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
@@ -222,6 +259,7 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
 
     # ---- planning analytics
     for name, src in (("absorption", "absorption.parquet"),
+                      ("absorption_survival", "absorption_survival.parquet"),
                       ("size_histogram", "size_histogram.parquet"),
                       ("threshold_edges", "threshold_edges.parquet"),
                       ("county_size_histogram", "county_size_histogram.parquet"),
@@ -416,6 +454,9 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
     cov = json.load(open(os.path.join(COVER_DIR, "qa_coverage.json")))
     lad = json.load(open(os.path.join(LADDER_DIR, "qa_ladder.json")))
     facts_qa = json.load(open(os.path.join(FACT_DIR, "qa_facts.json")))
+    lineage = _lineage_meta()
+    tq = lad.get("thresholds", {})
+    surv = lad.get("absorption_survival")
     meta = {
         "title": "Montana cadastral change, 2003-2026",
         "snapshots": len(snaps), "intervals": len(intervals),
@@ -428,7 +469,15 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
         "dormant": {k: lad[k] for k in
                     ("dormant_parcels_total", "dormant_lt40ac_total",
                      "dormant_lt40ac_acres", "dormant_note") if k in lad},
-        "thresholds": lad.get("thresholds", {}).get("edge_tests"),
+        "thresholds": tq.get("edge_tests"),
+        "thresholds_sensitivity": {k: tq.get(k) for k in ("sensitivity", "controls", "by_era", "sensitivity_note")},
+        "absorption_survival": ({k: surv[k] for k in ("creations_observed", "built_by_series_end",
+                                                      "left_record_unbuilt", "unbuilt_under_observation", "note")}
+                                | {"horizons": {h: {k: v for k, v in d.items() if k != "by_cohort"}
+                                                for h, d in surv.get("horizons", {}).items()}}
+                                if surv else None),
+        "lineage": lineage,
+        "temporal": temporal.registry(),
         "holdings": hold_meta,
         "cama": cama_meta,
         "caveats": [
@@ -441,7 +490,16 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
             "number carries an assessed building 89-91% of the time, but 30,812 "
             "parcels in 2026 have a building and no house number.",
             "Public-domain status comes from a single 2026 public-lands layer "
-            "applied to every year.",
+            "applied to every year: a contemporary classification of historical "
+            "parcels, so the tenure series describes the parcels inside what is "
+            "public land today, not how much land was public in a given year.",
+            "A geocode is an identifier, not a parcel: a number the DOR reissues "
+            "after a gap is counted as a new parcel from its return"
+            + (f" ({lineage['resurrected_ids']:,} such identifiers over the series)"
+               if lineage and lineage.get("resurrected_ids") is not None else "") + ".",
+            "The parcels drawn at depth are the newest export's. The map is today's "
+            "fabric carrying historical attributes and first-seen outlines, not a "
+            "reconstruction of the fabric at an earlier date.",
             "A reservation boundary is jurisdictional, not ownership: "
             "reservations hold large amounts of fee land from the allotment era, "
             "59% of Fort Peck by acreage.",
@@ -471,6 +529,8 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
     with open(os.path.join(out_dir, "meta.json"), "w") as fh:
         json.dump(meta, fh, indent=2, default=str)
     files["meta.json"] = {"bytes": os.path.getsize(os.path.join(out_dir, "meta.json"))}
+    # The release manifest last, over everything written above.
+    manifest.build(out_dir)
     return {"files": files, "total_bytes": sum(
         v.get("bytes", 0) for v in files.values() if isinstance(v, dict))}
 

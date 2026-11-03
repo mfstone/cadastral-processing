@@ -7,6 +7,7 @@
  * requirement can be checked by a dev server alone.
  */
 import puppeteer from 'puppeteer-core';
+import { scripted } from './lib/mock-assistant.mjs';
 
 const BASE = (process.env.SMOKE_URL || 'http://127.0.0.1:4321').replace(/\/$/, '');
 const CHROME = process.env.CHROME_PATH || '/usr/bin/google-chrome';
@@ -51,6 +52,16 @@ for (const f of DATA) {
 }
 console.log(`        (payload probed: ${(bytes / 1e6).toFixed(2)} MB)`);
 
+// ---- 1b. on a deployed origin only: the tiles must go out compressed, which
+// depends on the Content-Type being one Cloudflare compresses (see _headers).
+if (/^https:/.test(BASE)) {
+  const tr = await fetch(`${BASE}/data/parcels/11/367/716.pbf`, { headers: { 'accept-encoding': 'gzip, br, zstd' } });
+  const enc = tr.headers.get('content-encoding') || '';
+  const type = tr.headers.get('content-type') || '';
+  ok('deployed tiles are compressed on the wire', tr.ok && /gzip|br|zstd/.test(enc) && /x-protobuf/.test(type),
+    `status ${tr.status}, content-encoding "${enc}", content-type "${type}"`);
+}
+
 // ---- 2. the no-Range requirement
 const rangeProbe = await fetch(`${BASE}/data/twp_core.parquet`, { headers: { Range: 'bytes=0-1023' } });
 const rangeBody = (await rangeProbe.arrayBuffer()).byteLength;
@@ -68,12 +79,37 @@ await page.setViewport({ width: 1400, height: 900 });
 
 const errors = [];
 const ranged = [];
-page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('console', (m) => {
+  if (m.type() !== 'error') return;
+  // The mocked Worker refusal below is meant to be a 429; the browser logs it.
+  if (mock.fail && /status of 429/.test(m.text())) return;
+  errors.push(m.text());
+});
 page.on('pageerror', (e) => errors.push(String(e)));
 await page.setRequestInterception(true);
+// The assistant's endpoint is answered here by a scripted model (no key, no
+// network): the health check says it is on, and each POST gets the next step
+// of the script for the question asked. `mock.fail` makes the Worker refuse.
+const mock = { script: null, fail: 0 };
+let assistantChunk = 0;
+page.on('response', async (res) => {
+  if (/\/_astro\/panel\.[^/]+\.js$/.test(res.url())) { try { assistantChunk = (await res.buffer()).length; } catch { /* ignore */ } }
+});
 page.on('request', (req) => {
   const h = req.headers();
   if (h.range || h.Range) ranged.push(req.url());
+  const path = new URL(req.url()).pathname;
+  if (path === '/api/assistant/health') {
+    return req.respond({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ ok: true, model: 'claude-mock', effort: 'medium', names: 'never', turnstile: false, site_key: null, prompt: 'mock' }) });
+  }
+  if (path === '/api/assistant') {
+    if (mock.fail) {
+      return req.respond({ status: mock.fail, contentType: 'application/json',
+        body: JSON.stringify({ error: { type: 'budget', message: 'You have reached today\u2019s limit for the assistant.' } }) });
+    }
+    return req.respond({ status: 200, contentType: 'application/x-ndjson', body: mock.script ? mock.script.next() : '' });
+  }
   req.continue();
 });
 
@@ -152,6 +188,51 @@ await new Promise((r) => setTimeout(r, 1800));
 const cm = await page.evaluate(() =>
   document.querySelectorAll('#panel .card svg').length);
 ok('county level renders', cm > 0, `svgs=${cm}`);
+
+// ---- 3b. the state is addressable: one applyState for every driver, and
+// the URL carries it. The hash must reflect a programmatic change, the
+// controls must follow the state, a camera move must not re-render the view,
+// and a view change must render exactly once.
+const dash = await page.evaluate(async () => {
+  const r0 = window.__state.renders;
+  const r = await window.__dash.applyState({ view: 'holdings', level: 'county', selection: [6], snap: 19 });
+  const st = window.__dash.getState();
+  const nav = [...document.querySelectorAll('#nav button')].find((b) => b.getAttribute('aria-selected') === 'true');
+  return { hash: location.hash, view: st.view, level: st.level, selection: st.selection, snap: st.snap,
+    levelSel: document.getElementById('level').value, levelDisabled: document.getElementById('level').disabled,
+    navLabel: nav ? nav.textContent.trim() : '', label: document.getElementById('snaplabel').textContent.trim(),
+    rendersDelta: window.__state.renders - r0, warnings: r.warnings };
+});
+ok('applyState drives the view, the level, the selection and the vintage',
+  dash.view === 'holdings' && dash.level === 'county' && dash.selection.length === 1 && dash.selection[0] === 6
+    && dash.snap === 19 && dash.levelSel === 'county' && dash.levelDisabled && dash.navLabel === 'Holdings'
+    && dash.label === '2018-01-10' && dash.rendersDelta === 1,
+  JSON.stringify(dash));
+ok('the URL hash carries the state', /v=holdings/.test(dash.hash) && /l=c/.test(dash.hash) && /u=6/.test(dash.hash) && /s=19/.test(dash.hash), dash.hash);
+const camera = await page.evaluate(async () => {
+  const r0 = window.__state.renders;
+  await window.__dash.applyState({ map: { center: [-111.035, 45.68], zoom: 12.6 } });
+  const st = window.__dash.getState();
+  return { rendersDelta: window.__state.renders - r0, zoom: window.__map.map.getZoom(), hash: location.hash,
+    stateZoom: st.map && st.map.zoom, legendMode: document.getElementById('legend').dataset.mode };
+});
+ok('a camera change moves the map and the URL without re-rendering the view',
+  camera.rendersDelta === 0 && Math.abs(camera.zoom - 12.6) < 0.05 && /c=-111\.035/.test(camera.hash) && camera.legendMode === 'parcel',
+  JSON.stringify(camera));
+const described = await page.evaluate(() => window.__dash.describeState());
+ok('describeState speaks in names and dates',
+  described.view.label === 'Holdings' && described.selection.names[0] === 'Gallatin' && described.vintage.date === '2018-01-10'
+    && described.map.parcel_scale === true && described.caveats.length >= 1,
+  JSON.stringify({ view: described.view.label, names: described.selection.names, date: described.vintage.date }));
+const restored = await page.evaluate(async () => {
+  const r0 = window.__state.renders;
+  await window.__dash.applyState({ view: 'ladder', selection: [], map: null });
+  return { rendersDelta: window.__state.renders - r0, hash: location.hash, legendMode: document.getElementById('legend').dataset.mode,
+    zoom: window.__map.map.getZoom() };
+});
+ok('restoring a view renders once and leaves the parcel key behind',
+  restored.rendersDelta === 1 && !/v=/.test(restored.hash) && restored.legendMode !== 'parcel' && restored.zoom < 9,
+  JSON.stringify(restored));
 
 // ---- 4. actual parcels, the deep-zoom surface
 await page.select('#level', 'township');
@@ -507,6 +588,160 @@ for (const kind of ['reservations', 'publiclands']) {
     window.__map.map.getLayoutProperty(`ov-${k}-fill`, 'visibility'), kind);
   ok(`${kind} overlay toggles off`, vis === 'none', String(vis));
 }
+
+// ---- 5c. a phone: nothing overflows sideways, the map is on top, the panel below.
+const phone = await browser.newPage();
+// A 390-px layout viewport without device emulation: with `isMobile` Chrome
+// reported an 807-px inner width here and the phone rules never applied; the
+// layout is what is under test, and a CSS width of 390 is what a phone lays out at.
+await phone.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
+await phone.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 60000 });
+await phone.waitForSelector('#panel .card svg', { timeout: 60000 });
+const ph = await phone.evaluate(() => {
+  const r = (id) => document.getElementById(id).getBoundingClientRect();
+  return { scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
+    mapTop: r('mapwrap').top, mapH: r('mapwrap').height, panelTop: r('panel').top,
+    canvas: !!document.querySelector('#map canvas'), layersOpen: document.getElementById('layers').open,
+    navScrolls: document.getElementById('nav').scrollWidth > document.getElementById('nav').clientWidth,
+    legendW: r('legend').width, mapDesc: document.getElementById('map-desc').textContent.length };
+});
+ok('the phone layout has no horizontal overflow and stacks the map above the panel',
+  ph.scrollW <= ph.innerW + 1 && ph.canvas && ph.mapH >= 240 && ph.mapH <= 420 && ph.panelTop >= ph.mapTop + ph.mapH - 2
+    && !ph.layersOpen && ph.navScrolls && ph.legendW <= 0.6 * ph.innerW && ph.mapDesc > 20,
+  JSON.stringify(ph));
+await phone.close();
+
+// ---- 6. a pasted link is a state: a fresh page opens on it.
+const page2 = await browser.newPage();
+await page2.setViewport({ width: 1400, height: 900 });
+const errors2 = [];
+page2.on('pageerror', (e) => errors2.push(String(e)));
+await page2.goto(`${BASE}/#v=thresholds&e=mid&l=c&u=31&s=20`, { waitUntil: 'networkidle2', timeout: 60000 });
+await page2.waitForSelector('#panel .card svg', { timeout: 60000 });
+const linked = await page2.evaluate(() => {
+  const st = window.__dash.getState();
+  const nav = [...document.querySelectorAll('#nav button')].find((b) => b.getAttribute('aria-selected') === 'true');
+  return { view: st.view, era: st.era, level: st.level, selection: st.selection, snap: st.snap,
+    eraShown: !document.getElementById('erawrap').hidden, eraSel: document.getElementById('era').value,
+    navLabel: nav ? nav.textContent.trim() : '', hash: location.hash,
+    histogram: document.querySelectorAll('#panel .card svg rect[fill]').length,
+    askHidden: document.getElementById('assist-toggle').hidden };
+});
+ok('without the Worker the Ask button stays hidden', linked.askHidden === true);
+ok('a deep link opens the dashboard in its state',
+  linked.view === 'thresholds' && linked.era === 'mid' && linked.level === 'county' && linked.selection[0] === 31
+    && linked.snap === 20 && linked.eraShown && linked.eraSel === 'mid' && linked.navLabel === 'Thresholds'
+    && linked.histogram > 5 && errors2.length === 0,
+  JSON.stringify(linked));
+await page2.close();
+
+// ---- 5b. the assistant, against the scripted model: the panel, the loop,
+// the executors and the names policy, with no key and no network.
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await new Promise((r) => setTimeout(r, 1500));
+ok('the Ask button appears when the assistant endpoint answers',
+  await page.evaluate(() => !document.getElementById('assist-toggle').hidden));
+await page.click('#assist-toggle');
+await page.waitForSelector('#assist:not([hidden])', { timeout: 20000 });
+await page.waitForFunction(() => !!window.__assistant, { timeout: 20000 });
+const panel0 = await page.evaluate(() => ({
+  chips: document.querySelectorAll('#assist-suggest .chip').length,
+  privacy: document.getElementById('assist-privacy').textContent.length,
+  focused: document.activeElement && document.activeElement.id }));
+ok('the panel opens with suggestions, the privacy note and focus in the box',
+  panel0.chips === 6 && panel0.privacy > 100 && panel0.focused === 'assist-q', JSON.stringify(panel0));
+ok('the assistant chunk is loaded on first open and stays small',
+  assistantChunk > 10000 && assistantChunk < 700000, `${assistantChunk} bytes`);
+
+const q1 = 'Show me large holdings in Gallatin County in 2018';
+mock.script = scripted(q1);
+const run = await page.evaluate(async (q) => {
+  const turn = await window.__assistant.ask(q);
+  const st = window.__dash.getState();
+  return { status: turn.status, tools: turn.tools.map((t) => [t.name, t.ok, t.summary]), text: turn.text, hash: location.hash,
+    view: st.view, level: st.level, selection: st.selection, snap: st.snap, zoom: window.__map.map.getZoom(),
+    answerHtml: document.querySelector('.assist-a')?.innerHTML || '',
+    trace: document.querySelectorAll('.assist-trace li').length, restore: !!document.querySelector('.assist-actions-row .chip'),
+    messages: window.__assistant.conv.messages.length, roles: window.__assistant.conv.messages.map((m) => m.role[0]).join('') };
+}, q1);
+ok('a scripted question drives the dashboard through the tools',
+  run.status === 'done' && run.tools.length === 3 && run.tools.every((t) => t[1]) && run.view === 'holdings'
+    && run.level === 'county' && run.selection.length === 1 && run.selection[0] === 6 && run.snap === 19,
+  JSON.stringify({ status: run.status, tools: run.tools, view: run.view, level: run.level, sel: run.selection, snap: run.snap }));
+ok('the map fitted to the county and the URL carries the state',
+  run.zoom > 7 && run.zoom <= 9.6 && /v=holdings/.test(run.hash) && /u=6/.test(run.hash) && /s=19/.test(run.hash),
+  JSON.stringify({ zoom: run.zoom, hash: run.hash }));
+ok('the answer is rendered as DOM with the trace and a way back',
+  /<strong>Gallatin County<\/strong>/.test(run.answerHtml) && /<li>/.test(run.answerHtml) && !/<script/i.test(run.answerHtml)
+    && run.trace === 3 && run.restore && /2018-01-10/.test(run.text),
+  JSON.stringify({ trace: run.trace, restore: run.restore, text: run.text.slice(0, 80) }));
+ok('the conversation alternates and ends with the answer', run.roles === 'uauaua' && run.messages === 6, run.roles);
+
+// The executors against the page's own numbers.
+const series = await page.evaluate(async () => {
+  const r = JSON.parse(await window.__assistant.exec('read_series', { level: 'county', units: [6], topic: 'dev', measures: null,
+    derived: 'addressed_unbuilt_share', state: null, snapshots: { from: 28, to: 28 } }));
+  await window.__dash.applyState({ view: 'ladder', level: 'county', selection: [6], snap: 28 });
+  const tile = [...document.querySelectorAll('#panel .stat')].find((e) => /addressed, not built/.test(e.querySelector('.k')?.textContent || ''));
+  return { value: r.points[0].value, date: r.points[0].date, covered: r.points[0].covered_units, detail: tile ? tile.querySelector('.d').textContent : '' };
+});
+const shown = Number((series.detail.match(/([\d.]+)% of parcels/) || [])[1]);
+ok('read_series returns the number the Development view shows',
+  Number.isFinite(shown) && Math.abs(series.value - shown) < 0.06 && series.date === '2026-09-04' && series.covered === 1,
+  JSON.stringify({ series: series.value, shown, detail: series.detail }));
+const tbl = await page.evaluate(async () => {
+  const r = JSON.parse(await window.__assistant.exec('read_table', { table: 'holdings_top', columns: null,
+    where: [{ col: 'county_n', op: '=', value: 6 }, { col: 's', op: '=', value: 19 }], group_by: null, aggregate: null,
+    order_by: [{ col: 'rank', dir: 'asc' }], limit: 10, decode: true }));
+  let err = '';
+  try {
+    await window.__assistant.exec('read_table', { table: 'holdings_top', columns: ['display_name'], where: null, group_by: null,
+      aggregate: null, order_by: null, limit: 10, decode: true });
+  } catch (e) { err = e.message; }
+  return { cols: r.columns, rows: r.rows.length, first: r.rows[0], err, raw: JSON.stringify(r) };
+});
+ok('read_table decodes codes and withholds owner names',
+  tbl.rows === 10 && !tbl.cols.includes('display_name') && tbl.first[0] === 'Gallatin' && tbl.first[1] === '2018-01-10'
+    && /not available/.test(tbl.err) && !/display_name/.test(tbl.raw),
+  JSON.stringify({ cols: tbl.cols, rows: tbl.rows, first: tbl.first, err: tbl.err }));
+const place = await page.evaluate(async () => JSON.parse(await window.__assistant.exec('lookup_place', { query: 'Bozeman', kind: 'city' })));
+ok('lookup_place finds a city with its county and township',
+  place.candidates[0]?.kind === 'city' && place.candidates[0].county?.code === 6 && !!place.candidates[0].township && !!place.candidates[0].bbox,
+  JSON.stringify(place.candidates[0]));
+
+const restoredView = await page.evaluate(async () => {
+  document.querySelector('.assist-actions-row .chip').click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const st = window.__dash.getState();
+  return { view: st.view, level: st.level, selection: st.selection };
+});
+ok('Restore my view returns to the state before the question',
+  restoredView.view === 'ladder' && restoredView.level === 'township' && restoredView.selection.length === 0, JSON.stringify(restoredView));
+
+const q2 = 'How many people live in Bozeman? population';
+mock.script = scripted(q2);
+const pop = await page.evaluate((q) => window.__assistant.ask(q), q2);
+ok('an unanswerable question gets a plain answer without tools',
+  pop.status === 'done' && pop.tools.length === 0 && /do not carry population/.test(pop.text), pop.text.slice(0, 80));
+const q3 = 'error path: where is Atlantis county';
+mock.script = scripted(q3);
+const errp = await page.evaluate((q) => window.__assistant.ask(q), q3);
+ok('a failed tool call goes back to the model as an error and the answer still arrives',
+  errp.status === 'done' && errp.tools.length === 1 && errp.tools[0].ok === false && /Atlantis/.test(errp.text),
+  JSON.stringify({ status: errp.status, tools: errp.tools.map((t) => [t.name, t.ok, t.summary.slice(0, 60)]) }));
+mock.fail = 429;
+const limited = await page.evaluate(async () => {
+  const n = window.__assistant.conv.messages.length;
+  const t = await window.__assistant.ask('one more');
+  return { status: t.status, error: t.error, same: window.__assistant.conv.messages.length === n,
+    shown: document.querySelector('.assist-turn:last-child .assist-status')?.textContent || '' };
+});
+mock.fail = 0;
+ok('a refusal from the Worker is shown and the conversation rolls back',
+  limited.status === 'error' && /limit/i.test(limited.error) && limited.same && /limit/i.test(limited.shown), JSON.stringify(limited));
+await page.evaluate(() => document.getElementById('assist-close').click());
+ok('closing the panel returns focus to the Ask button',
+  await page.evaluate(() => document.getElementById('assist').hidden && document.activeElement?.id === 'assist-toggle'));
 
 ok('no console errors', errors.length === 0, errors.slice(0, 4).join(' | '));
 

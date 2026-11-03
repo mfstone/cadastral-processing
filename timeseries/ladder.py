@@ -5,7 +5,12 @@ Three planning analytics that need the time axis rather than a single snapshot.
 **Absorption.** Of the lots created in a given interval, what share have reached
 an assessed building by one, three, five and ten years later? Per county this
 gives *years of supply*, which is the number that actually settles an argument
-about whether to approve more lots.
+about whether to approve more lots. The cohort curves are descriptive; a lot
+that is unbuilt at its last observation is **right-censored**, not "never
+built", so :func:`absorption_survival` estimates time to a building with the
+end of each record treated as a censoring (Kaplan-Meier) and a lot leaving the
+record -- consolidated, retired, renumbered -- as a competing event
+(Aalen-Johansen).
 
 **Dormant platted inventory.** Parcels still at stage 0 -- no house number, no
 building -- years after they were created. This is the residue the 2005-2008
@@ -22,9 +27,14 @@ under-40-acre band as the residential-lot proxy.
 regulates divisions creating parcels **under 160 acres**; the family-conveyance
 exemption (MCA 76-3-207(1)(b)) may not leave more than one remaining parcel under
 160 acres; the agricultural-covenant exemption requires exclusive agricultural
-use. So the size distribution of *newly created* parcels around 160 acres is a
-direct read on whether divisions are being structured to stay outside review. A
-mass immediately above the threshold is a review-avoidance signature.
+use; and under the Sanitation in Subdivisions Act a "subdivision" is a division
+creating a parcel under 20 acres (MCA 76-4-102(25)), a parcel of 20 acres or
+more being outside that review (76-4-103). So the size distribution of *newly
+created* parcels around those lines is a direct read on whether divisions are
+being structured to stay outside review. A mass immediately above a threshold
+is consistent with that -- bunching is a pattern, not a motive -- and the
+sensitivity sweep in :func:`thresholds` says how much of it survives a change
+of window and the removal of the aliquot size that sits on the line itself.
 """
 
 from __future__ import annotations
@@ -36,6 +46,8 @@ import os
 
 import numpy as np
 import pandas as pd
+
+from . import events
 
 log = logging.getLogger("timeseries.ladder")
 
@@ -49,8 +61,14 @@ DORMANT_YEARS = 5
 # then coarse. Deliberately fine enough to see a spike one acre wide.
 THRESHOLD_BINS = (list(np.arange(0, 50.5, 0.5)) + list(np.arange(52, 202, 2))
                   + [220, 260, 320, 400, 480, 640, 1280, 1e9])
-# The statutory edges worth testing directly.
+# The statutory edges worth testing directly, and the control sizes with no
+# statutory meaning that the same test is run at.
 STATUTORY_EDGES = (20.0, 40.0, 160.0)
+CONTROL_EDGES = (10.0, 12.0, 15.0, 25.0, 30.0, 50.0, 80.0, 100.0, 320.0)
+# A parcel within this fraction of an edge IS the aliquot size (a 20-acre
+# half of a quarter-quarter, a 40-acre quarter-quarter, a 160-acre quarter):
+# the survey grid, which sits at the very bottom of the "above" window.
+EXACT_TOL = 0.005
 
 
 def _dev_stage(df):
@@ -88,9 +106,7 @@ def absorption(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR) -> pd.DataF
     absorption curve.
     """
     dates = _dates(snap_dir)
-    pres = pd.read_parquet(os.path.join(event_dir, "presence.parquet"),
-                           columns=["parcel_id", "first_idx"])
-    first = pres.set_index("parcel_id")["first_idx"]
+    occ = events.load_occurrences(event_dir)
     rows = []
     for j, date in enumerate(dates):
         df = pd.read_parquet(os.path.join(snap_dir, f"parcels_{date}.parquet"),
@@ -100,7 +116,9 @@ def absorption(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR) -> pd.DataF
         # failed to (timeseries.commonarea).
         df = df[~df["is_common_area"].to_numpy(dtype=bool)]
         df["dev_stage"] = _dev_stage(df)
-        df["first_idx"] = df["parcel_id"].map(first).astype("int16")
+        # The cohort is the occurrence present at this snapshot: a reissued
+        # geocode belongs to the cohort of its return, not of its first life.
+        df["first_idx"] = df["parcel_id"].map(events.occurrence_start(occ, j)).fillna(-1).astype("int16")
         born = df[(df["first_idx"] > 0) & (df["first_idx"] <= j)]
         g = (born.groupby(["first_idx", "county_n", "dev_stage"])
              .agg(parcels=("parcel_id", "size"), acres=("acres", "sum")).reset_index())
@@ -115,6 +133,121 @@ def absorption(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR) -> pd.DataF
     out["years_elapsed"] = [
         (yrs[o] - yrs[f]).days / 365.25 for f, o in zip(out["first_idx"], out["observed_idx"])]
     return out
+
+
+def absorption_survival(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR
+                        ) -> tuple[pd.DataFrame, dict]:
+    """Time to an assessed building for every observed creation, censored
+    honestly.
+
+    One row per (cohort, county or 0 for statewide, age in snapshots): the
+    parcels still under observation and unbuilt at that age (``at_risk``), the
+    number first built at that age, the number that left the record at that
+    age without a building (``gone``: consolidated, retired or renumbered),
+    and the number whose record simply ends there (``ended``, the series end).
+    ``km_built`` treats leaving as a censoring (Kaplan-Meier, the share that
+    would have been built had every lot stayed); ``ci_built`` treats it as a
+    competing event (Aalen-Johansen, the share of created lots actually
+    built), which is the smaller and the more literal of the two.
+    """
+    dates = _dates(snap_dir)
+    n = len(dates)
+    occ = events.load_occurrences(event_dir)
+    occ = occ[occ["first_idx"] > 0].reset_index(drop=True)     # creation observed
+    first_built = np.full(len(occ), 127, dtype="int16")
+    common = np.zeros(len(occ), dtype=bool)
+    for j, date in enumerate(dates):
+        if j == 0:
+            continue
+        df = pd.read_parquet(os.path.join(snap_dir, f"parcels_{date}.parquet"),
+                             columns=["parcel_id", "improved", "is_common_area"])
+        live = occ[(occ["first_idx"] <= j) & (occ["last_idx"] >= j)]
+        rowmap = pd.Series(live.index.to_numpy(), index=live["parcel_id"].to_numpy())
+        rows = df["parcel_id"].map(rowmap)
+        ok = rows.notna().to_numpy()
+        r = rows[ok].to_numpy().astype("int64")
+        built = df["improved"].to_numpy()[ok] == 1
+        np.minimum.at(first_built, r[built], np.int16(j))
+        common[r[df["is_common_area"].to_numpy(dtype=bool)[ok]]] = True
+        log.info("  survival %s", date)
+    keep = ~common
+    occ = occ[keep].reset_index(drop=True)
+    fb = first_built[keep]
+    f = occ["first_idx"].to_numpy().astype("int64")
+    last = occ["last_idx"].to_numpy().astype("int64")
+    event = fb <= last
+    exit_age = np.where(event, fb - f, last - f)
+    gone = (~event) & (last < n - 1)
+    county = pd.to_numeric(occ["parcel_id"].str.slice(0, 2), errors="coerce").fillna(0).astype("int16")
+    d = pd.DataFrame({"cohort": f.astype("int16"), "county_n": county, "exit": exit_age.astype("int16"),
+                      "event": event, "gone": gone})
+    ts = [pd.Timestamp(x) for x in dates]
+
+    def tab(g: pd.DataFrame, cohort: int, cn: int, out: list) -> None:
+        maxa = n - 1 - cohort
+        ex = g["exit"].to_numpy()
+        ev = g["event"].to_numpy()
+        go = g["gone"].to_numpy()
+        built = np.bincount(ex[ev], minlength=maxa + 1)[:maxa + 1]
+        left = np.bincount(ex[go], minlength=maxa + 1)[:maxa + 1]
+        ended = np.bincount(ex[~ev & ~go], minlength=maxa + 1)[:maxa + 1]
+        exits = built + left + ended
+        at_risk = len(g) - np.concatenate([[0], np.cumsum(exits)[:-1]])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            h_b = np.where(at_risk > 0, built / at_risk, 0.0)
+            h_all = np.where(at_risk > 0, (built + left) / at_risk, 0.0)
+        s_all = np.cumprod(1.0 - h_all)
+        s_prev = np.concatenate([[1.0], s_all[:-1]])
+        ci = np.cumsum(s_prev * h_b)
+        km = 1.0 - np.cumprod(1.0 - h_b)
+        for a in range(maxa + 1):
+            out.append({"cohort": cohort, "county_n": cn, "age_idx": a,
+                        "years": round((ts[cohort + a] - ts[cohort]).days / 365.25, 3),
+                        "at_risk": int(at_risk[a]), "built": int(built[a]), "gone": int(left[a]),
+                        "ended": int(ended[a]), "km_built": round(float(km[a]), 5),
+                        "ci_built": round(float(ci[a]), 5)})
+
+    out: list[dict] = []
+    for cohort, g in d.groupby("cohort"):
+        tab(g, int(cohort), 0, out)
+        for cn, gc in g.groupby("county_n"):
+            if cn > 0:
+                tab(gc, int(cohort), int(cn), out)
+    table = pd.DataFrame(out)
+    for c in ("cohort", "county_n", "age_idx", "at_risk", "built", "gone", "ended"):
+        table[c] = table[c].astype("int32")
+
+    # The statewide reading at five, ten and fifteen years, per cohort that
+    # has been followed that long, and the plain tally of what happened to
+    # every observed creation by the end of the series.
+    sw = table[table["county_n"] == 0]
+    horizons = {}
+    for yrs in (5, 10, 15):
+        rows = []
+        for cohort, g in sw.groupby("cohort"):
+            g = g[g["years"] >= yrs]
+            if g.empty:
+                continue
+            r = g.iloc[0]
+            rows.append({"cohort": int(cohort), "cohort_date": dates[int(cohort)], "age_years": float(r["years"]),
+                         "ci_built": float(r["ci_built"]), "km_built": float(r["km_built"]), "at_risk_start": int(sw[sw["cohort"] == cohort].iloc[0]["at_risk"])})
+        if rows:
+            ci = np.array([r["ci_built"] for r in rows])
+            horizons[f"{yrs}y"] = {"cohorts": len(rows), "ci_built_min": round(float(ci.min()), 4),
+                                  "ci_built_median": round(float(np.median(ci)), 4), "ci_built_max": round(float(ci.max()), 4),
+                                  "km_built_median": round(float(np.median([r["km_built"] for r in rows])), 4),
+                                  "by_cohort": rows}
+    qa = {
+        "creations_observed": int(len(d)),
+        "built_by_series_end": int(d["event"].sum()),
+        "left_record_unbuilt": int(d["gone"].sum()),
+        "unbuilt_under_observation": int((~d["event"] & ~d["gone"]).sum()),
+        "horizons": horizons,
+        "note": "ci_built is the Aalen-Johansen cumulative incidence of an assessed building with "
+                "leaving the record as a competing event; km_built treats leaving as censoring. "
+                "A lot unbuilt at its last observation is right-censored, not never built.",
+    }
+    return table, qa
 
 
 def thresholds(event_dir: str = EVENT_DIR) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
@@ -190,9 +323,37 @@ def thresholds(event_dir: str = EVENT_DIR) -> tuple[pd.DataFrame, dict, pd.DataF
             a = int(((sub["acres"] >= edge) & (sub["acres"] < edge + w)).sum())
             e[f"{edge:g}"] = {"below": b, "above": a, "ratio": round(a / max(1, b), 3)}
         era[lab] = e
+    # Sensitivity: the same ratio under other windows, and with the aliquot
+    # size itself (the survey grid, exactly on the line) removed from both
+    # sides; then the control sizes that carry no statutory meaning.
+    acres = ev["acres"].to_numpy(dtype="float64")
+
+    def edge_test(edge: float, w: float) -> dict:
+        below = (acres >= edge - w) & (acres < edge)
+        above = (acres >= edge) & (acres < edge + w)
+        exact = np.abs(acres - edge) <= EXACT_TOL * edge
+        b, a = int(below.sum()), int(above.sum())
+        bx, ax = int((below & ~exact).sum()), int((above & ~exact).sum())
+        return {"window_acres": round(w, 3), "below": b, "above": a, "ratio": round(a / max(1, b), 3),
+                "exact": int(exact.sum()), "below_excl_exact": bx, "above_excl_exact": ax,
+                "ratio_excl_exact": round(ax / max(1, bx), 3)}
+
+    sens = {}
+    for edge in STATUTORY_EDGES:
+        e = {}
+        for label, w in (("rel1", 0.01 * edge), ("rel2", 0.02 * edge), ("rel3", 0.03 * edge),
+                         ("rel5", 0.05 * edge), ("rel10", 0.10 * edge),
+                         ("abs0.5", 0.5), ("abs1", 1.0), ("abs2", 2.0)):
+            e[label] = edge_test(edge, max(w, 0.25))
+        sens[f"{edge:g}"] = e
+    controls = {f"{edge:g}": edge_test(edge, max(1.0, edge * 0.03)) for edge in CONTROL_EDGES}
     qa = {"events_scored": int(len(ev)),
           "note": "first_mapping excluded: coverage arriving, not land divided",
           "edge_tests": tests, "by_era": era,
+          "sensitivity": sens, "controls": controls,
+          "sensitivity_note": "rel/abs name the window as a fraction of the edge or in acres; "
+                              "*_excl_exact removes parcels within 0.5% of the edge, the aliquot "
+                              "size itself, which sits at the bottom of the 'above' window",
           "pct_under_160_acres": round(100.0 * float((ev["acres"] < 160).mean()), 3),
           "county_edges_rows": int(len(edges)), "county_histogram_rows": int(len(chist))}
     return hist, qa, edges, chist
@@ -203,9 +364,8 @@ def dormant(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR,
     """Stage-0 parcels at the latest snapshot, by how long they have been so."""
     dates = _dates(snap_dir)
     latest = dates[-1]
-    pres = pd.read_parquet(os.path.join(event_dir, "presence.parquet"),
-                           columns=["parcel_id", "first_idx"])
-    first = pres.set_index("parcel_id")["first_idx"]
+    # Age from the start of the parcel's current occurrence (events.py).
+    first = events.occurrence_start(events.load_occurrences(event_dir), len(dates) - 1)
     df = pd.read_parquet(os.path.join(snap_dir, f"parcels_{latest}.parquet"),
                          columns=["parcel_id", "improved", "has_house_number",
                                   "county_n", "acres", "county", "twp_code",
@@ -217,7 +377,7 @@ def dormant(snap_dir: str = SNAP_DIR, event_dir: str = EVENT_DIR,
     df = df[~common]
     df["dev_stage"] = _dev_stage(df)
     df["tr_unit"] = df["county"].fillna("") + df["twp_code"].fillna("")
-    df["first_idx"] = df["parcel_id"].map(first).astype("int16")
+    df["first_idx"] = df["parcel_id"].map(first).fillna(-1).astype("int16")
     ts = {i: pd.Timestamp(d) for i, d in enumerate(dates)}
     df["age_years"] = [(ts[len(dates) - 1] - ts[f]).days / 365.25 if f >= 0 else np.nan
                        for f in df["first_idx"]]
@@ -262,6 +422,10 @@ def main(argv: list[str] | None = None) -> int:
     ab = absorption(args.snap_dir, args.event_dir)
     ab.to_parquet(os.path.join(args.out, "absorption.parquet"), index=False, compression="zstd")
 
+    log.info("absorption survival (censored)")
+    surv, sqa = absorption_survival(args.snap_dir, args.event_dir)
+    surv.to_parquet(os.path.join(args.out, "absorption_survival.parquet"), index=False, compression="zstd")
+
     log.info("regulatory thresholds")
     hist, tqa, edges, chist = thresholds(args.event_dir)
     hist.to_parquet(os.path.join(args.out, "size_histogram.parquet"), index=False, compression="zstd")
@@ -285,7 +449,8 @@ def main(argv: list[str] | None = None) -> int:
                            "residential-lot proxy; dedicated common areas "
                            "(open space, parks, HOA and condo tracts) are "
                            "excluded from every cohort"),
-          "thresholds": tqa}
+          "thresholds": tqa,
+          "absorption_survival": sqa}
     with open(os.path.join(args.out, "qa_ladder.json"), "w") as fh:
         json.dump(qa, fh, indent=2, default=str)
     log.info("dormant: %s parcels, %.2fM acres across %d counties",
