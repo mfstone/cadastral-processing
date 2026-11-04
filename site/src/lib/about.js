@@ -270,6 +270,11 @@ export function aboutSections(dim, meta) {
     { key: 'contact', title: 'Questions and comments', prompt: false, html: `
       <p>This dashboard is a project of <a href="https://www.epistemegeospatial.com/">Episteme Geospatial</a>.
       Comments, corrections and questions are welcome through the
-      <a href="${CONTACT_URL}">contact page</a>.</p>` },
+      <a href="${CONTACT_URL}">contact page</a>.</p>
+      <p>This site counts page views with a self-hosted, cookieless
+      <a href="https://umami.is" rel="noreferrer noopener">Umami</a> instance, to see whether anyone is
+      using it. No cookies are set, no profile is built and nothing is shared with a third party. What
+      you look at is never sent: not the view, the vintage, the selection or the map position, only
+      that the page was opened. Browsers that send Do Not Track are not counted.</p>` },
   ];
 }

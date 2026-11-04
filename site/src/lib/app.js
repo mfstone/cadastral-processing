@@ -26,6 +26,7 @@ import { DERIVED } from '../assistant/derived.mjs';
 const ARRIVED_ON_LINK = typeof location !== 'undefined' && location.hash.replace(/^#/, '').length > 0;
 import { REPORTS, renderReport } from './reports.js';
 import { aboutSections } from './about.js';
+import { pageview } from './analytics.js';
 import { S, applyState, getState, describeState, toHash, fromHash, bindHost, syncSnapLabel, writeHash,
   ERA_BOUNDS, LAYER_KEYS, LAYER_IDS, relayout } from './state.js';
 import { twpCube, countyCube, countyFlow, twpFlow, activeStock, twpIds, countyIds, selectedUnits, unitFeatureId, viewScope, countyAt,
@@ -2297,6 +2298,8 @@ export async function boot() {
   // The assistant's button is probed first so the tour can include it; the
   // tour starts by itself on a first visit and is a header button after.
   await enableAssistant();
+  // Counted on load, before the terms notice, so a visit that stops there still counts.
+  pageview();
   // The terms of use come first on a first visit; the tutorial waits for them.
   const { showDisclaimer } = await import('./disclaimer.js');
   await showDisclaimer();
