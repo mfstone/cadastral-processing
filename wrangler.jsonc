@@ -10,13 +10,13 @@
  * route makes the Worker's ownership of it a configured fact. The data and
  * tiles stay assets on purpose: the page fetches every Parquet file whole
  * and reads tiles by exact path, so nothing there needs HTTP Range. The
- * in-house basemap archive does (it is PMTiles): until it moves to R2 it is
- * the one thing a Pages/Workers deploy cannot serve, and the basemap menu
- * falls back to outlines on its own when the archive is absent.
+ * in-house basemap archive does (it is PMTiles): it is an R2 object, served
+ * with Range by worker/basemap.mjs, so run_worker_first names it too.
  *
- * Secrets (never in this file): ANTHROPIC_API_KEY, ASSISTANT_SALT, and for
- * the bot check TURNSTILE_SECRET -- `npx wrangler secret put <NAME>`; locally
- * in .dev.vars (see .dev.vars.example). */
+ * Secrets (never in this file): ANTHROPIC_API_KEY, ASSISTANT_SALT, for the
+ * bot check TURNSTILE_SECRET, and ANTHROPIC_WORKSPACE_ID when the key is an
+ * organisation default key -- `npx wrangler secret put <NAME>`; locally in
+ * .dev.vars (see .dev.vars.example). */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "mt-cadastral-change",
@@ -30,7 +30,7 @@
     "directory": "./site/dist",
     "binding": "ASSETS",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/basemap/mt-basemap.pmtiles"]
   },
 
   /* The assistant's knobs. The model and the effort are the two the cost
@@ -45,6 +45,23 @@
     "ASSISTANT_DAILY_REQUESTS": "600",
     "ASSISTANT_DAILY_OUTPUT_TOKENS": "1500000",
     "ASSISTANT_IP_DAILY_REQUESTS": "80",
+    /* The monthly spend cap, in dollars, estimated from the usage of every
+     * answer at the prices below. New questions stop at the cap and the panel
+     * says the allowance is used up; a question already under way may finish,
+     * up to the overrun. Set the Anthropic Console spend limit a little above
+     * cap + overrun as the hard stop. */
+    "ASSISTANT_MONTHLY_BUDGET_USD": "20",
+    "ASSISTANT_MONTHLY_OVERRUN_USD": "1",
+    /* Questions per visitor (a salted hash of the IP; no accounts, no cookies
+     * needed). A question is what a person types, several API calls each. */
+    "ASSISTANT_IP_DAILY_QUESTIONS": "5",
+    "ASSISTANT_IP_MONTHLY_QUESTIONS": "10",
+    /* Dollars per million tokens: Claude Opus 5.5 list prices; the cache
+     * write is the five-minute rate (1.25 x input). Change with the model. */
+    "ASSISTANT_PRICE_INPUT": "4",
+    "ASSISTANT_PRICE_OUTPUT": "20",
+    "ASSISTANT_PRICE_CACHE_READ": "0.2",
+    "ASSISTANT_PRICE_CACHE_WRITE": "5",
     "TURNSTILE_SITE_KEY": ""
   },
 
@@ -54,6 +71,11 @@
     { "name": "ASSIST_RL", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }
   ],
 
+  /* The in-house basemap archive (PMTiles, read by byte range): too big for
+   * an asset and needs Range, so it is an R2 object served by basemap.mjs. */
+  "r2_buckets": [
+    { "binding": "BASEMAP", "bucket_name": "mt-cadastral-basemap" }
+  ],
   "durable_objects": {
     "bindings": [{ "name": "BUDGET", "class_name": "Budget" }]
   },

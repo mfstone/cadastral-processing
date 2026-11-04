@@ -11,7 +11,10 @@
     "build": "npm run build --prefix site",
     "prompt": "node site/scripts/build-prompt.mjs",
     "dev:worker": "wrangler dev",
+    "dev:seed-basemap": "wrangler r2 object put mt-cadastral-basemap/mt-basemap.pmtiles --file site/public/basemap/mt-basemap.pmtiles --content-type application/octet-stream --local",
     "deploy": "npm run build --prefix site && wrangler deploy",
+    "deploy:basemap": "wrangler r2 object put mt-cadastral-basemap/mt-basemap.pmtiles --file site/public/basemap/mt-basemap.pmtiles --content-type application/octet-stream --remote",
+    "deploy:pages": "node pages/stage.mjs && cd pages && wrangler pages deploy --branch main",
     "test:worker": "node --test worker/test/*.test.mjs",
     "audit": "npm audit --omit=dev --audit-level=high && npm audit --omit=dev --audit-level=high --prefix site",
     "test": "npm run test:unit --prefix site && npm run test:worker"

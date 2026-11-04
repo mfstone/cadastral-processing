@@ -9,8 +9,9 @@
 
    Colour is applied through `setFeatureState` rather than by rewriting the
    source, which keeps a repaint at a few milliseconds for 4,135 features.
-   `removeFeatureState` is called before each repaint, or units keep a stale
-   shade when they drop out of the current filter.
+   A repaint writes only the units whose colour changed and clears the ones
+   no longer coloured, or units would keep a stale shade when they drop out
+   of the current filter; a redraw that changes no colour writes nothing.
 
    A unit with no comparable data is painted in a distinct masked colour, never
    in the ramp's zero step: a reader cannot otherwise tell "no data" from
@@ -129,7 +130,7 @@ export class UnitMap {
     this.onParcel = onParcel || null;
     this.level = 'township';
     this.selected = new Set();
-    this._painted = { township: false, county: false };
+    this._painted = { township: null, county: null };
 
     this.map = new maplibregl.Map({
       container,
@@ -505,12 +506,12 @@ export class UnitMap {
   /** The view's fill on or off. Off leaves the parcel lines (from z10 rather
    *  than z12.5, so the fabric still reads) and the outlines; the fill layer
    *  stays rendered at zero opacity so clicks and hover still resolve. */
-  setParcelFill(on) {
+  setParcelFill(on, { linesFrom } = {}) {
     this.parcelFill = on;
     if (this.map.getLayer('parcel-fill')) {
       this.map.setPaintProperty('parcel-fill', 'fill-opacity', on ? PARCEL_FILL_OPACITY : 0);
     }
-    if (this.map.getLayer('parcel-line')) this.map.setLayerZoomRange('parcel-line', on ? 12.5 : 10, 24);
+    if (this.map.getLayer('parcel-line')) this.map.setLayerZoomRange('parcel-line', linesFrom ?? (on ? 12.5 : 10), 24);
   }
 
   /** Data-driven paint for the parcel layer, plus the outline on the parcels
@@ -528,6 +529,12 @@ export class UnitMap {
     if (this.map.getLayer('parcel-hl') && outline?.color) {
       this.map.setPaintProperty('parcel-hl', 'line-color', outline.color);
     }
+    // An outline may carry a width factor (a number or an expression): the
+    // Subdivision growth view draws the lots of the latest step heavier.
+    const k = outline?.width ?? 1;
+    const scaled = (a, b, c) => ['interpolate', ['linear'], ['zoom'], 10, ['*', a, k], 13, ['*', b, k], 15, ['*', c, k]];
+    if (this.map.getLayer('parcel-hl')) this.map.setPaintProperty('parcel-hl', 'line-width', scaled(1.2, 2.2, 3));
+    if (this.map.getLayer('parcel-hl-case')) this.map.setPaintProperty('parcel-hl-case', 'line-width', scaled(2.4, 3.8, 5));
   }
 
   get zoom() { return this.map.getZoom(); }
@@ -551,15 +558,21 @@ export class UnitMap {
 
   get source() { return this.level === 'township' ? 'twp' : 'cty'; }
 
-  /** Repaint from a Map of featureId -> css colour. Stale state is cleared first. */
+  /** Repaint from a Map of featureId -> css colour. Only the units whose
+   *  colour changed are written, and units no longer coloured lose theirs:
+   *  every feature-state write makes MapLibre rebuild the paint buffers of
+   *  the source's tiles, and a redraw that changes nothing (the charts
+   *  following a pan) must not cost a repaint of 4,134 townships. */
   paint(colors) {
     const src = this.source;
-    if (this._painted[this.level]) this.map.removeFeatureState({ source: src });
-    this._painted[this.level] = true;
-    for (const [id, color] of colors) {
-      this.map.setFeatureState({ source: src, id }, { color });
+    const prev = this._painted[this.level] || new Map();
+    for (const id of prev.keys()) {
+      if (!colors.has(id)) this.map.removeFeatureState({ source: src, id }, 'color');
     }
-    this.applySelection();
+    for (const [id, color] of colors) {
+      if (prev.get(id) !== color) this.map.setFeatureState({ source: src, id }, { color });
+    }
+    this._painted[this.level] = new Map(colors);
   }
 
   applySelection() {

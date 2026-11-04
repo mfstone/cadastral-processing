@@ -1,0 +1,19 @@
+/* pages/wrangler.jsonc — the Pages project that carries the custom domain.
+ *
+ * Why a Pages project in front of the Worker: a Worker takes a custom domain
+ * only when the domain's DNS is a Cloudflare zone, and epistemegeospatial.com
+ * is not (its nameservers are Google's). A Pages project takes a subdomain by
+ * a plain CNAME at any DNS host, the way crashmap.epistemegeospatial.com is
+ * served. So Pages serves the static site, and the two routes that need code
+ * -- /api/* and the basemap archive -- go through _worker.js to the Worker
+ * (mt-cadastral-change, the repo-root wrangler.jsonc) over a service binding.
+ * The Worker keeps the Durable Object, the rate limit, the secrets and R2.
+ *
+ * Deploy: npm run deploy:pages (pages/stage.mjs stages .deploy/pages, then wrangler runs from here). */
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "cadastral-analytics",
+  "pages_build_output_dir": "../.deploy/pages",
+  "compatibility_date": "2026-10-01",
+  "services": [{ "binding": "APP", "service": "mt-cadastral-change" }]
+}

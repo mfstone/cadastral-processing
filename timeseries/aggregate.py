@@ -324,6 +324,10 @@ def flow_tables(event_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
     """Per-interval flow at township and county grain."""
     code_to_tr = units.set_index("unit")["tr_key"]
     twp, cty = [], []
+    # Lots divided off by a plat, an amended plat or a certificate of survey
+    # (timeseries.subdivisions); without that stage the counts are zero.
+    from timeseries import subdivisions
+    sd_flags = subdivisions.load_flags(event_dir)
     for epath in sorted(glob.glob(os.path.join(event_dir, "events_*.parquet"))):
         base = os.path.basename(epath)[:-len(".parquet")]
         parts = base.split("_")
@@ -337,6 +341,12 @@ def flow_tables(event_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
                 sink.append(pd.DataFrame())
                 continue
             e = ev.copy()
+            sd = sd_flags.get(idx)
+            e["_how"] = (e["parcel_id"].map(sd.drop_duplicates("parcel_id").set_index("parcel_id")["how"]).fillna("")
+                         if sd is not None and len(sd) else "")
+            for h in ("plat", "amended", "cos"):
+                e[f"_d_{h}"] = e["_how"] == h
+            e["_div"] = e["_how"] != ""
             e["unit"] = e["township_key"]
             e["tr_key"] = e["unit"].map(code_to_tr).fillna(UNASSIGNED)
             e["county_n"] = pd.to_numeric(e["unit"].str.slice(0, 2), errors="coerce")
@@ -352,6 +362,8 @@ def flow_tables(event_dir: str, units: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
                 conf_high=("confidence", lambda s: int((s == "high").sum())),
                 conf_medium=("confidence", lambda s: int((s == "medium").sum())),
                 is_subdivision=("is_subdivision", "sum"),
+                divided=("_div", "sum"), divided_plat=("_d_plat", "sum"),
+                divided_amended=("_d_amended", "sum"), divided_cos=("_d_cos", "sum"),
             )
             t = tr.copy()
             t["unit"] = t["township_key"]

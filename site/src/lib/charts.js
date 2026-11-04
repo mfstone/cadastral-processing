@@ -37,6 +37,29 @@ function el(name, attrs = {}, parent = null) {
 // tokens on itself, so its charts must read from it whatever the page theme.
 let paletteRoot = null;
 export function setPaletteRoot(el) { paletteRoot = el; }
+
+/* The snapshot slider's position, drawn on every chart whose x axis lists
+   exports, so moving the slider visibly moves something on a page of time
+   series. It is found by the export's label (each export has its own month),
+   so a chart that leaves an export out still shows it; a chart over intervals
+   or bins has no such label and is left alone, as is a chart without the
+   selected export (the ladder at 2009-07-05). */
+let mark = null;   // the selected export's x label
+export function setSnapshotMark(label) { mark = label || null; }
+function snapshotMark(svg, f, xLabels, X, withLabel) {
+  const i = mark ? xLabels.indexOf(mark) : -1;
+  if (i < 0) return;
+  const x = X(i);
+  const label = withLabel ? mark : null;
+  const g = el('g', { class: 'snapmark' }, svg);
+  el('line', { x1: x, x2: x, y1: f.y0, y2: f.y1 }, g);
+  if (label) {
+    const right = x > (f.x0 + f.x1) / 2;
+    // At the foot of the plot: the top right is where the lines' own labels sit.
+    const t = el('text', { x: right ? x - 4 : x + 4, y: f.y1 - 5, 'text-anchor': right ? 'end' : 'start' }, g);
+    t.textContent = label;
+  }
+}
 export function cssVar(name) {
   return getComputedStyle(paletteRoot || document.documentElement).getPropertyValue(name).trim();
 }
@@ -208,6 +231,7 @@ export function stackedArea(host, {
     el('path', { d: `${d}Z`, fill: colors[j], stroke: 'none' }, f.svg);
   }
   xTicks(f.svg, f, xLabels, xTickEvery);
+  snapshotMark(f.svg, f, xLabels, X, true);
 
   // Direct labels on the widest segment when the series count is small.
   if (k <= 4) {
@@ -251,7 +275,7 @@ export function stackedArea(host, {
 
 /* -------------------------------------------------------------- line chart */
 export function lineChart(host, {
-  series, labels, colors, xLabels, height = 190, fmt = fmtInt, caption, yMax, xTickEvery,
+  series, labels, colors, xLabels, height = 190, fmt = fmtInt, caption, yMax, xTickEvery, directLabels = true,
 }) {
   const wrap = document.createElement('div');
   host.appendChild(wrap);
@@ -278,7 +302,7 @@ export function lineChart(host, {
   // Direct labels on the last point, pushed apart where two series end
   // close together (the document and maximal tiers often do): a label on top
   // of another is no label at all.
-  if (series.length <= 4 && n) {
+  if (directLabels && series.length <= 4 && n) {
     const last = n - 1;
     const labs = series.map((s, j) => ({ j, y: isFinite(s[last]) ? Y(s[last]) - 6 : NaN }))
       .filter((l) => isFinite(l.y)).sort((a, b) => a.y - b.y);
@@ -292,6 +316,7 @@ export function lineChart(host, {
     }
   }
   xTicks(f.svg, f, xLabels, xTickEvery);
+  snapshotMark(f.svg, f, xLabels, X, true);
 
   const ch = el('line', { class: 'crosshair', y1: f.y0, y2: f.y1, x1: -99, x2: -99 }, f.svg);
   const dots = series.map((_, j) => el('circle', {
@@ -442,6 +467,7 @@ export function smallMultiples(host, {
     }
     el('path', { d, fill: 'none', stroke: fill, 'stroke-width': 2,
       'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, fr.svg);
+    snapshotMark(fr.svg, fr, xLabels, X, false);
 
     const hit = el('rect', { class: 'hit', x: fr.x0, y: fr.y0,
       width: fr.x1 - fr.x0, height: fr.y1 - fr.y0 }, fr.svg);

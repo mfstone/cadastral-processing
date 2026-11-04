@@ -89,7 +89,7 @@ const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').
 function masthead(host, ctx, { kind, title, scope, extra = '' }) {
   const first = ctx.dim.snapshots[0].date, last = ctx.dim.snapshots[ctx.nSnaps - 1].date;
   div(host, 'mast', `
-    <div class="eyebrow">Montana cadastral change · ${esc(kind)}</div>
+    <div class="eyebrow">Montana Cadastral Analytics Engine · ${esc(kind)}</div>
     <h1>${esc(title)}</h1>
     ${scope ? `<div class="scope">${esc(scope)}</div>` : ''}
     <div class="meta">Dated to the <strong>${last}</strong> export · ${ctx.nSnaps} vintages, ${first} to ${last}

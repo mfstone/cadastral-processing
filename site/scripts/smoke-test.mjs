@@ -76,6 +76,9 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 await page.setViewport({ width: 1400, height: 900 });
+// The first-visit tour would open over everything tested below; it has its
+// own checks in clean browser contexts at the end.
+await page.evaluateOnNewDocument(() => { try { localStorage.setItem('mtcad.tour.v1', 'done'); } catch { /* none */ } });
 
 const errors = [];
 const ranged = [];
@@ -123,9 +126,36 @@ ok('boot overlay removed', (await page.$('#boot')) === null);
 const subText = await page.$eval('#sub', (e) => e.textContent.trim());
 ok('header reports the series', /29 vintages/.test(subText), subText);
 
-const views = await page.$$eval('#nav button', (bs) => bs.map((b) => b.textContent.trim()));
-ok('all ten views present, Condition after Development, Reports then About last',
-  views.length === 10 && views[1] === 'Condition' && views[8] === 'Reports' && views[9] === 'About', views.join(', '));
+const views = await page.$$eval('#nav button', (bs) => bs.map((b) => b.querySelector('.vi-t').textContent.trim()));
+const briefs = await page.$$eval('#nav button .vi-d', (ds) => ds.filter((d) => d.textContent.trim().length > 20).length);
+const aboutBtn = await page.$eval('#about-btn', (b) => b.textContent.trim());
+const reportsBtn = await page.evaluate(() => {
+  const r = document.getElementById('reports-btn'), v = document.getElementById('views-btn');
+  return { text: r.textContent.trim(), rightOfMenu: r.getBoundingClientRect().left > v.getBoundingClientRect().right - 1,
+    next: r.previousElementSibling?.id === 'viewmenu' };
+});
+ok('the View menu lists nine views with a line each; Reports sits just right of it and About has its own button',
+  views.length === 9 && views[0] === 'Development' && views[1] === 'Subdivision growth' && views[2] === 'Condition'
+  && views[8] === 'Review' && !views.includes('Reports') && briefs === 9
+  && reportsBtn.text === 'Reports' && reportsBtn.rightOfMenu && reportsBtn.next
+  && aboutBtn === 'About', views.join(', '));
+const menu = await page.evaluate(async () => {
+  const btn = document.getElementById('views-btn'), nav = document.getElementById('nav');
+  const closed0 = nav.hidden;
+  btn.click(); await new Promise((r) => setTimeout(r, 50));
+  const opened = !nav.hidden && btn.getAttribute('aria-expanded') === 'true';
+  const focusIn = nav.contains(document.activeElement);
+  nav.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await new Promise((r) => setTimeout(r, 50));
+  const fontBtn = getComputedStyle(btn).fontFamily, fontBody = getComputedStyle(document.querySelector('.card .cap') || document.body).fontFamily;
+  const fontTitle = getComputedStyle(document.querySelector('.card > h3')).fontFamily;
+  return { closed0, opened, focusIn, closed: nav.hidden, back: document.activeElement === btn, current: document.getElementById('views-current').textContent,
+    serifBtn: /Source Serif/.test(fontBtn), serifTitle: /Source Serif/.test(fontTitle), sansBody: !/Serif/.test(fontBody), h1: document.querySelector('h1').textContent };
+});
+ok('the View menu opens with focus inside, Escape closes it, and it names the current view',
+  menu.closed0 && menu.opened && menu.focusIn && menu.closed && menu.back && menu.current === 'Development', JSON.stringify(menu));
+ok('buttons and titles are set in the serif, body text in the sans, under the new name',
+  menu.serifBtn && menu.serifTitle && menu.sansBody && menu.h1 === 'Montana Cadastral Analytics Engine', JSON.stringify(menu));
 
 // Map rendered something.
 const canvas = await page.$('#map canvas');
@@ -200,7 +230,7 @@ const dash = await page.evaluate(async () => {
   const nav = [...document.querySelectorAll('#nav button')].find((b) => b.getAttribute('aria-selected') === 'true');
   return { hash: location.hash, view: st.view, level: st.level, selection: st.selection, snap: st.snap,
     levelSel: document.getElementById('level').value, levelDisabled: document.getElementById('level').disabled,
-    navLabel: nav ? nav.textContent.trim() : '', label: document.getElementById('snaplabel').textContent.trim(),
+    navLabel: nav ? nav.querySelector('.vi-t').textContent.trim() : '', label: document.getElementById('snaplabel').textContent.trim(),
     rendersDelta: window.__state.renders - r0, warnings: r.warnings };
 });
 ok('applyState drives the view, the level, the selection and the vintage',
@@ -264,7 +294,7 @@ ok('parcel tiles carry the DOR condition and year built', cdAttr.withCd > 50 && 
 // The Condition view's parcel paint must be the DOR rating and the year built
 // together (the bivariate grid, nine cells in the legend), and its popup must
 // name the rating and the year built.
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Condition') b.click(); });
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if ((b.querySelector('.vi-t')?.textContent || b.textContent).trim() === 'Condition') b.click(); });
 await new Promise((r) => setTimeout(r, 3500));
 const condView = await page.evaluate(() => {
   const paint = window.__map.map.getPaintProperty('parcel-fill', 'fill-color');
@@ -291,7 +321,7 @@ await page.evaluate(() => { const sl = document.getElementById('snap'); sl.value
 await new Promise((r) => setTimeout(r, 2000));
 // The agricultural-acreage line has a deliberate gap (NaN) at 2009-07-05;
 // the chart must scale to the finite values and draw inside its frame.
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Fragmentation') b.click(); });
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if ((b.querySelector('.vi-t')?.textContent || b.textContent).trim() === 'Fragmentation') b.click(); });
 await new Promise((r) => setTimeout(r, 4000));
 const agChart = await page.evaluate(() => {
   const card = Array.from(document.querySelectorAll('#panel .card'))
@@ -306,12 +336,12 @@ const agChart = await page.evaluate(() => {
 });
 ok('agricultural acreage line draws inside its frame',
   agChart.card && agChart.points >= 20 && agChart.inFrame, JSON.stringify(agChart));
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if ((b.querySelector('.vi-t')?.textContent || b.textContent).trim() === 'Development') b.click(); });
 await new Promise((r) => setTimeout(r, 3000));
 
 // The About view: how to use, how to read, where it comes from, caveats,
 // and the Episteme contact link; the map comes back when it is left.
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'About') b.click(); });
+await page.evaluate(() => document.getElementById('about-btn').click());
 await new Promise((r) => setTimeout(r, 1500));
 const about = await page.evaluate(() => ({
   cards: document.querySelectorAll('#panel .card').length,
@@ -321,7 +351,7 @@ const about = await page.evaluate(() => ({
 ok('About view explains the dashboard and links to Episteme',
   about.cards >= 6 && /epistemegeospatial\.com\/contact/.test(about.contact) && about.doi && about.mapHidden,
   JSON.stringify(about));
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if ((b.querySelector('.vi-t')?.textContent || b.textContent).trim() === 'Development') b.click(); });
 await new Promise((r) => setTimeout(r, 2500));
 const back = await page.evaluate(() => ({
   mapShown: document.getElementById('mapwrap').offsetHeight > 0,
@@ -332,7 +362,7 @@ ok('leaving About restores the map', back.mapShown && back.canvas, JSON.stringif
 // to PDF by the browser. Each must compose without error and carry its
 // sections; the worksheet must be a CSV shaped for owner_overrides.csv; and
 // the print path (the same one Save as PDF uses) must yield a real PDF.
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Reports') b.click(); });
+await page.evaluate(() => document.getElementById('reports-btn').click());
 await new Promise((r) => setTimeout(r, 800));
 const rform = await page.evaluate(() => ({
   kinds: [...document.querySelectorAll('#rpt-kind option')].map((o) => o.value),
@@ -396,7 +426,7 @@ const pdfPages = (pdfTxt.match(/\/Type\s*\/Page[^s]/g) || []).length;
 ok('report prints to a multi-page PDF through the browser',
   pdfBuf.length > 50000 && pdfTxt.startsWith('%PDF-') && pdfPages >= 3,
   JSON.stringify({ bytes: pdfBuf.length, pages: pdfPages }));
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if ((b.querySelector('.vi-t')?.textContent || b.textContent).trim() === 'Development') b.click(); });
 await new Promise((r) => setTimeout(r, 2500));
 
 // First-party reference layers: roads from the same tiles, named from the
@@ -479,56 +509,61 @@ await new Promise((r) => setTimeout(r, 1500));
 
 const legendMode = await page.evaluate(() => document.getElementById('legend').dataset.mode);
 ok('legend switches to the parcel key at depth', legendMode === 'parcel', legendMode);
-// The period outlines are the one thing on the parcel map that follows the
-// slider; the key must say what they are and name the vintage they refer to.
+// Zoomed in on an ordinary view, the key says the parcel colours are the
+// latest record and points to Subdivision growth; nothing is outlined.
 const keyText = await page.evaluate(() => ({
   text: document.getElementById('legend').innerText,
   swatch: !!document.querySelector('#legend .pl i.ol'),
-  date: document.getElementById('snaplabel').textContent.trim() }));
-ok('parcel key explains the period outlines and names the vintage',
-  keyText.swatch && /did not yet exist in|no parcels created after/.test(keyText.text) && keyText.text.includes(keyText.date),
-  JSON.stringify({ swatch: keyText.swatch, date: keyText.date, text: keyText.text.slice(0, 120) }));
-// At the first vintage every parcel that came later is outlined by its period
-// and the county gate is in the filter; at the last vintage nothing is outlined.
+  outlined: window.__map.map.queryRenderedFeatures({ layers: ['parcel-hl'] }).length,
+  fillSwitch: !!document.getElementById('lyr-parcel-fill') }));
+ok('an ordinary view at parcel scale fills, outlines nothing, and says its colours do not follow the slider',
+  !keyText.swatch && keyText.outlined === 0 && /do not follow the slider/.test(keyText.text) && /Subdivision growth/.test(keyText.text)
+  && !keyText.fillSwitch, JSON.stringify({ ...keyText, text: keyText.text.slice(0, 120) }));
+// Subdivision growth: fills by year of creation, no outlines; nothing filled
+// at the first export, the county gate in the expression, a chip per year in
+// the key, and Development back to its own paint afterwards.
 const outl = await page.evaluate(async () => {
-  for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click();
-  const sl = document.getElementById('snap');
-  const last = Number(sl.max);
-  const set = (v) => { sl.value = String(v); sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change')); };
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  await wait(1500);
-  set(0); await wait(3000);
-  const m = window.__map.map;
-  const atFirst = m.queryRenderedFeatures({ layers: ['parcel-hl'] }).length;
-  const color = JSON.stringify(m.getPaintProperty('parcel-hl', 'line-color'));
-  const filter = JSON.stringify(m.getFilter('parcel-hl'));
-  const periods = document.querySelectorAll('#legend .pl i.ol').length;
-  set(last); await wait(3000);
-  const atLast = m.queryRenderedFeatures({ layers: ['parcel-hl'] }).length;
-  return { atFirst, atLast, step: color.includes('"step"'), gate: filter.includes('"slice"'), periods };
-});
-ok('parcels created after the selected vintage are outlined by period, none after the last',
-  outl.atFirst > 50 && outl.atLast === 0 && outl.step && outl.gate && outl.periods === 5, JSON.stringify(outl));
-// The fill can be switched off under Parcels: the fill goes transparent, the
-// outlines stay, the key says so, and switching it back restores the paint.
-const fillOff = await page.evaluate(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const m = window.__map.map;
-  const cb = document.getElementById('lyr-parcel-fill');
-  const sl = document.getElementById('snap');
-  const set = (v) => { sl.value = String(v); sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change')); };
-  cb.checked = false; cb.dispatchEvent(new Event('change'));
-  set(0); await wait(3000);
+  await window.__dash.applyState({ view: 'growth', snap: 0 }); await wait(3000);
+  const fill0 = JSON.stringify(m.getPaintProperty('parcel-fill', 'fill-color'));
+  await window.__dash.applyState({ snap: Number(document.getElementById('snap').max) }); await wait(3000);
+  const fill = JSON.stringify(m.getPaintProperty('parcel-fill', 'fill-color'));
   const op = JSON.stringify(m.getPaintProperty('parcel-fill', 'fill-opacity'));
   const outlined = m.queryRenderedFeatures({ layers: ['parcel-hl'] }).length;
-  const noted = /fill off/i.test(document.getElementById('legend').innerText);
-  cb.checked = true; cb.dispatchEvent(new Event('change'));
-  set(Number(sl.max)); await wait(2500);
-  const opBack = JSON.stringify(m.getPaintProperty('parcel-fill', 'fill-opacity'));
-  return { op, outlined, noted, opBack };
+  const lineMin = m.getLayer('parcel-line').minzoom;
+  const chips = document.querySelectorAll('#legend .yr').length;
+  const now = document.querySelector('#legend .yr.yr-now')?.textContent;
+  await window.__dash.applyState({ view: 'ladder' }); await wait(2500);
+  const fillBack = JSON.stringify(m.getPaintProperty('parcel-fill', 'fill-color'));
+  return { first0: fill0.includes('["<=",["coalesce",["get","sdx"],-1],0]'), gate: fill.includes('"slice"'),
+    pastel: fill.includes('#ff2d6f'), full: fill.includes('#fff200'), neon: fill.includes('#d63dff'),
+    eight: new Set(fill.match(/#[0-9a-f]{6}/g)).size <= 7, sd: fill.includes('"sdx"'),
+    op: op !== '0', outlined, lineMin, chips, now, back: !fillBack.includes('#d63dff') };
 });
-ok('the parcel fill switches off under Parcels, leaving the outlines, and back on',
-  fillOff.op === '0' && fillOff.outlined > 50 && fillOff.noted && fillOff.opBack !== '0', JSON.stringify(fillOff));
+ok('Subdivision growth fills only lots divided off, by the year they were divided, in seven equal-interval classes, and Development keeps its own paint',
+  outl.first0 && outl.gate && outl.pastel && outl.full && outl.neon && outl.op && outl.outlined === 0 && outl.lineMin === 10
+  && outl.chips === 7 && outl.now === '23–26' && outl.eight && outl.sd && outl.back, JSON.stringify(outl));
+// The player: Play steps through the exports, Pause stops, the arrows step.
+const player = await page.evaluate(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await window.__dash.applyState({ view: 'growth', snap: 3 }); await wait(1500);
+  const q = (k) => document.querySelector(`[data-player="${k}"]`);
+  const sel = q('speed'); sel.value = '700'; sel.dispatchEvent(new Event('change'));
+  q('play').click(); await wait(2600);
+  const during = { snap: window.__dash.getState().snap, label: q('play').textContent };
+  q('play').click(); await wait(200);
+  const pausedAt = window.__dash.getState().snap; await wait(1500);
+  const still = window.__dash.getState().snap;
+  q('next').click(); await wait(900); const afterNext = window.__dash.getState().snap;
+  q('prev').click(); await wait(900); const afterPrev = window.__dash.getState().snap;
+  const cards = [...document.querySelectorAll('#panel .card > h3')].map((h) => h.textContent);
+  await window.__dash.applyState({ view: 'ladder' }); await wait(2500);
+  return { during, pausedAt, still, afterNext, afterPrev, cards: cards.length, hasPlayer: cards.includes('Play the series') };
+});
+ok('the Subdivision growth player plays, pauses and steps one export at a time',
+  player.during.snap >= 5 && player.during.label === 'Pause' && player.still === player.pausedAt
+  && player.afterNext === player.pausedAt + 1 && player.afterPrev === player.pausedAt && player.hasPlayer, JSON.stringify(player));
 
 const popup = await page.evaluate(() => {
   const f = window.__map.map.queryRenderedFeatures({ layers: ['parcel-fill'] })[0];
@@ -589,7 +624,7 @@ for (const kind of ['reservations', 'publiclands']) {
   ok(`${kind} overlay toggles off`, vis === 'none', String(vis));
 }
 
-// ---- 5c. a phone: nothing overflows sideways, the map is on top, the panel below.
+// ---- 5c. a phone: nothing overflows sideways, the map fills, the panel is a sheet over it.
 const phone = await browser.newPage();
 // A 390-px layout viewport without device emulation: with `isMobile` Chrome
 // reported an 807-px inner width here and the phone rules never applied; the
@@ -599,16 +634,40 @@ await phone.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 60000 });
 await phone.waitForSelector('#panel .card svg', { timeout: 60000 });
 const ph = await phone.evaluate(() => {
   const r = (id) => document.getElementById(id).getBoundingClientRect();
-  return { scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
-    mapTop: r('mapwrap').top, mapH: r('mapwrap').height, panelTop: r('panel').top,
+  const lg = document.getElementById('legend'), L = lg.getBoundingClientRect();
+  return { scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth, innerH: window.innerHeight,
+    mapTop: r('mapwrap').top, mapH: r('mapwrap').height, panelTop: r('panel').top, panelBottom: r('panel').bottom,
+    panelH: r('panel').height, gripBottom: r('sheet-grip').bottom,
     canvas: !!document.querySelector('#map canvas'), layersOpen: document.getElementById('layers').open,
-    navScrolls: document.getElementById('nav').scrollWidth > document.getElementById('nav').clientWidth,
-    legendW: r('legend').width, mapDesc: document.getElementById('map-desc').textContent.length };
+    navScrolls: (() => { const b = document.getElementById('views-btn').getBoundingClientRect(); return b.width > 100 && b.right <= innerWidth + 1; })(),
+    legendInside: L.right <= innerWidth + 1 && ![...lg.querySelectorAll('*')].some((e) => { const b = e.getBoundingClientRect(); return b.width && b.right > L.right + 0.5; }),
+    notesHidden: ![...lg.querySelectorAll('.note')].some((n) => n.offsetParent), more: !!document.getElementById('legend-more').offsetParent,
+    filtersFolded: !document.getElementById('level').offsetParent && !!document.getElementById('filters-more').offsetParent,
+    mapDesc: document.getElementById('map-desc').textContent.length };
 });
-ok('the phone layout has no horizontal overflow and stacks the map above the panel',
-  ph.scrollW <= ph.innerW + 1 && ph.canvas && ph.mapH >= 240 && ph.mapH <= 420 && ph.panelTop >= ph.mapTop + ph.mapH - 2
-    && !ph.layersOpen && ph.navScrolls && ph.legendW <= 0.6 * ph.innerW && ph.mapDesc > 20,
+ok('the phone layout: full-width map above a sheet, layers closed, legend compact and inside, filters folded',
+  ph.scrollW <= ph.innerW + 1 && ph.canvas && ph.mapH >= 300 && Math.abs(ph.panelBottom - ph.innerH) <= 2
+    && Math.abs(ph.gripBottom - ph.panelTop) <= 2 && ph.panelTop >= ph.mapTop + ph.mapH - 2
+    && !ph.layersOpen && ph.navScrolls && ph.legendInside && ph.notesHidden && ph.more && ph.filtersFolded && ph.mapDesc > 20,
   JSON.stringify(ph));
+// The sheet: dragged up it covers the map, a tap brings it back down; its content scrolls.
+const grip = await phone.evaluate(() => { const b = document.getElementById('sheet-grip').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
+await phone.mouse.move(grip.x, grip.y); await phone.mouse.down();
+for (let k = 1; k <= 10; k++) await phone.mouse.move(grip.x, grip.y - 45 * k);
+await phone.mouse.up(); await new Promise((r) => setTimeout(r, 500));
+const up = await phone.evaluate(() => ({ top: document.getElementById('panel').getBoundingClientRect().top,
+  mapTop: document.getElementById('mapwrap').getBoundingClientRect().top,
+  scrolls: (() => { const p = document.getElementById('panel'); return p.scrollHeight > p.clientHeight; })() }));
+const g2 = await phone.evaluate(() => document.getElementById('sheet-grip').getBoundingClientRect().top + 12);
+await phone.mouse.click(grip.x, g2); await new Promise((r) => setTimeout(r, 500));
+const down = await phone.evaluate(() => document.getElementById('panel').getBoundingClientRect().top);
+await phone.click('#legend-more'); await new Promise((r) => setTimeout(r, 200));
+const more = await phone.evaluate(() => [...document.querySelectorAll('#legend .note')].some((n) => n.offsetParent));
+await phone.click('#filters-more'); await new Promise((r) => setTimeout(r, 300));
+const filt = await phone.evaluate(() => ({ level: !!document.getElementById('level').offsetParent, docW: document.documentElement.scrollWidth }));
+ok('the phone sheet drags up over the map and taps back down; More opens the legend notes; Filters opens the controls',
+  up.top < up.mapTop + 120 && up.scrolls && down > up.top + 200 && Math.abs(down - ph.panelTop) <= 3 && more
+  && filt.level && filt.docW <= ph.innerW + 1, JSON.stringify({ up, down, more, filt }));
 await phone.close();
 
 // ---- 6. a pasted link is a state: a fresh page opens on it.
@@ -623,7 +682,7 @@ const linked = await page2.evaluate(() => {
   const nav = [...document.querySelectorAll('#nav button')].find((b) => b.getAttribute('aria-selected') === 'true');
   return { view: st.view, era: st.era, level: st.level, selection: st.selection, snap: st.snap,
     eraShown: !document.getElementById('erawrap').hidden, eraSel: document.getElementById('era').value,
-    navLabel: nav ? nav.textContent.trim() : '', hash: location.hash,
+    navLabel: nav ? nav.querySelector('.vi-t').textContent.trim() : '', hash: location.hash,
     histogram: document.querySelectorAll('#panel .card svg rect[fill]').length,
     askHidden: document.getElementById('assist-toggle').hidden };
 });
@@ -637,7 +696,7 @@ await page2.close();
 
 // ---- 5b. the assistant, against the scripted model: the panel, the loop,
 // the executors and the names policy, with no key and no network.
-await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if (b.textContent.trim() === 'Development') b.click(); });
+await page.evaluate(() => { for (const b of document.querySelectorAll('#nav button')) if ((b.querySelector('.vi-t')?.textContent || b.textContent).trim() === 'Development') b.click(); });
 await new Promise((r) => setTimeout(r, 1500));
 ok('the Ask button appears when the assistant endpoint answers',
   await page.evaluate(() => !document.getElementById('assist-toggle').hidden));
@@ -650,6 +709,18 @@ const panel0 = await page.evaluate(() => ({
   focused: document.activeElement && document.activeElement.id }));
 ok('the panel opens with suggestions, the privacy note and focus in the box',
   panel0.chips === 6 && panel0.privacy > 100 && panel0.focused === 'assist-q', JSON.stringify(panel0));
+await new Promise((r) => setTimeout(r, 800));
+const dock = await page.evaluate(() => {
+  const a = document.getElementById('assist').getBoundingClientRect();
+  const app = document.getElementById('app').getBoundingClientRect();
+  const svg = document.querySelector('#panel svg');
+  const vbW = svg ? Number((svg.getAttribute('viewBox') || '').split(' ')[2]) : null;
+  return { appRight: Math.round(app.right), assistLeft: Math.round(a.left), innerW: innerWidth,
+    docW: document.documentElement.scrollWidth, svgW: svg ? Math.round(svg.getBoundingClientRect().width) : null, vbW };
+});
+ok('the open panel docks beside the dashboard and the charts redraw to the narrower width',
+  dock.appRight <= dock.assistLeft + 1 && dock.docW <= dock.innerW + 1 && dock.svgW != null
+  && Math.abs(dock.svgW - dock.vbW) <= 2, JSON.stringify(dock));
 ok('the assistant chunk is loaded on first open and stays small',
   assistantChunk > 10000 && assistantChunk < 700000, `${assistantChunk} bytes`);
 
@@ -668,8 +739,11 @@ ok('a scripted question drives the dashboard through the tools',
   run.status === 'done' && run.tools.length === 3 && run.tools.every((t) => t[1]) && run.view === 'holdings'
     && run.level === 'county' && run.selection.length === 1 && run.selection[0] === 6 && run.snap === 19,
   JSON.stringify({ status: run.status, tools: run.tools, view: run.view, level: run.level, sel: run.selection, snap: run.snap }));
+// The panel is docked while the assistant answers, so the map is the
+// narrower (or, below 1,400 px, the shorter, stacked) one and a county fits at
+// a lower zoom than it would full width: statewide is about 5.
 ok('the map fitted to the county and the URL carries the state',
-  run.zoom > 7 && run.zoom <= 9.6 && /v=holdings/.test(run.hash) && /u=6/.test(run.hash) && /s=19/.test(run.hash),
+  run.zoom > 6 && run.zoom <= 9.6 && /v=holdings/.test(run.hash) && /u=6/.test(run.hash) && /s=19/.test(run.hash),
   JSON.stringify({ zoom: run.zoom, hash: run.hash }));
 ok('the answer is rendered as DOM with the trace and a way back',
   /<strong>Gallatin County<\/strong>/.test(run.answerHtml) && /<li>/.test(run.answerHtml) && !/<script/i.test(run.answerHtml)
@@ -733,15 +807,231 @@ mock.fail = 429;
 const limited = await page.evaluate(async () => {
   const n = window.__assistant.conv.messages.length;
   const t = await window.__assistant.ask('one more');
+  const notice = document.getElementById('assist-notice');
   return { status: t.status, error: t.error, same: window.__assistant.conv.messages.length === n,
-    shown: document.querySelector('.assist-turn:last-child .assist-status')?.textContent || '' };
+    shown: notice.hidden ? '' : notice.textContent, locked: document.getElementById('assist-q').disabled,
+    unanswered: [...document.querySelectorAll('.assist-q')].some((q) => q.textContent === 'one more') };
 });
 mock.fail = 0;
-ok('a refusal from the Worker is shown and the conversation rolls back',
-  limited.status === 'error' && /limit/i.test(limited.error) && limited.same && /limit/i.test(limited.shown), JSON.stringify(limited));
+ok('a usage limit shows the notice, locks the box and rolls the conversation back',
+  limited.status === 'error' && /limit/i.test(limited.error) && limited.same && /limit/i.test(limited.shown)
+  && limited.locked && !limited.unanswered, JSON.stringify(limited));
 await page.evaluate(() => document.getElementById('assist-close').click());
 ok('closing the panel returns focus to the Ask button',
   await page.evaluate(() => document.getElementById('assist').hidden && document.activeElement?.id === 'assist-toggle'));
+
+// The slider visibly moves the time charts: a marker at the selected export.
+const markAt = async (snap) => {
+  await page.evaluate((snap) => window.__dash.applyState({ view: 'holdings', snap }), snap);
+  await new Promise((r) => setTimeout(r, 800));
+  return page.evaluate(() => [...document.querySelectorAll('#panel svg .snapmark line')].map((l) => Math.round(+l.getAttribute('x1'))));
+};
+const mA = await markAt(5), mB = await markAt(24);
+ok('the slider moves a marker on the Holdings time charts',
+  mA.length >= 4 && mA.length === mB.length && mA.every((x, i) => mB[i] > x), JSON.stringify({ mA, mB }));
+
+// ---- the first-visit tour, in clean contexts (no remembered visit).
+{
+  const ctx = await browser.createBrowserContext();
+  const tp = await ctx.newPage();
+  await tp.setViewport({ width: 1400, height: 900 });
+  const terr = [];
+  tp.on('pageerror', (e) => terr.push(String(e)));
+  await tp.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 60000 });
+  try { await tp.waitForFunction(() => window.__tour && window.__tour.open && window.__tour.ready, { timeout: 30000 }); }
+  catch (err) {
+    console.log('tour wait:', JSON.stringify(await tp.evaluate(() => ({ tour: typeof window.__tour, open: window.__tour?.open,
+      boot: !document.getElementById('boot')?.hidden && document.getElementById('boot')?.textContent,
+      app: !document.getElementById('app').hidden, stored: localStorage.getItem('mtcad.tour.v1'), hash: location.hash }))), terr);
+    throw err;
+  }
+  const first = await tp.evaluate(() => ({ count: document.getElementById('tour-count').textContent,
+    focus: document.activeElement?.id, modal: document.querySelector('#tour .tour-card')?.getAttribute('aria-modal') }));
+  ok('the tour opens by itself on a first visit, with focus in its card',
+    /^1 of \d+$/.test(first.count) && first.focus === 'tour-next' && first.modal === 'true', JSON.stringify(first));
+  const n = await tp.evaluate(() => window.__tour.count);
+  const seenSteps = [];
+  for (let k = 0; k < n; k++) {
+    const st = await tp.evaluate(() => {
+      const spot = document.querySelector('#tour .tour-spot'), card = document.querySelector('#tour .tour-card');
+      const c = card.getBoundingClientRect();
+      return { t: document.getElementById('tour-title').textContent, view: window.__dash.getState().view,
+        spot: !spot.hidden, inside: c.left >= 0 && c.top >= 0 && c.right <= innerWidth + 1 && c.bottom <= innerHeight + 1 };
+    });
+    seenSteps.push(st);
+    const before = await tp.evaluate(() => window.__tour.step);
+    await tp.click('#tour-next');
+    // A step that changes the view takes a render; wait for it, not a timer.
+    await tp.waitForFunction((b) => !window.__tour.open || (window.__tour.step !== b && window.__tour.ready), { timeout: 20000 }, before);
+    await new Promise((r) => setTimeout(r, 150));
+    if (!(await tp.evaluate(() => window.__tour.open))) break;
+  }
+  const byTitle = Object.fromEntries(seenSteps.map((x) => [x.t, x]));
+  // No assistant in this context (no mocked endpoint): its step is skipped.
+  const askHidden = await tp.evaluate(() => document.getElementById('assist-toggle').hidden);
+  ok('the tour walks every view and control with the card on screen',
+    ['Development', 'Subdivision growth', 'Condition', 'Ownership', 'Fragmentation', 'Churn', 'Thresholds', 'Holdings', 'Review']
+      .every((v) => byTitle[v] && byTitle[v].view === ({ Development: 'ladder', 'Subdivision growth': 'growth' }[v] || v.toLowerCase()))
+    && ['Snapshot slider', 'Unit', 'Measure', 'Basemap', 'Mask low coverage', 'The map', 'Parcels up close', 'Legend',
+      'Layers', 'Charts and tables', 'Reports', 'About', 'Light and dark', 'The View menu', 'Choosing a view', 'Tutorial'].every((t) => byTitle[t]?.spot)
+    && seenSteps.every((x) => x.inside) && seenSteps.length === n - (askHidden ? 1 : 0) && (!askHidden || !byTitle.Ask),
+  JSON.stringify({ steps: seenSteps.length, of: n, offscreen: seenSteps.filter((x) => !x.inside).map((x) => x.t) }));
+  // Closing restores the view first, then returns focus: wait for the focus.
+  await tp.waitForFunction(() => document.activeElement?.id === 'tour-btn', { timeout: 8000 }).catch(() => {});
+  const after = await tp.evaluate(() => ({ open: window.__tour.open, btn: !document.getElementById('tour-btn').hidden,
+    view: window.__dash.getState().view, map: window.__dash.getState().map, focus: document.activeElement?.id,
+    stored: (() => { try { return localStorage.getItem('mtcad.tour.v1'); } catch { return null; } })() }));
+  ok('finishing the tour restores the view and leaves the Tour button',
+    // The tour zooms to parcels on one step; the statewide view comes back.
+    !after.open && after.btn && after.view === 'ladder' && (after.map == null || after.map.zoom < 7)
+    && after.focus === 'tour-btn' && after.stored === 'done',
+    JSON.stringify(after));
+  await tp.reload({ waitUntil: 'networkidle2' });
+  await new Promise((r) => setTimeout(r, 1500));
+  const again = await tp.evaluate(() => window.__tour && window.__tour.open);
+  await tp.click('#tour-btn');
+  await new Promise((r) => setTimeout(r, 600));
+  const reopened = await tp.evaluate(() => window.__tour.open);
+  await tp.keyboard.press('Escape');
+  await new Promise((r) => setTimeout(r, 600));
+  const escaped = await tp.evaluate(() => window.__tour.open);
+  await tp.click('#tour-btn');
+  await tp.waitForFunction(() => window.__tour.open && window.__tour.ready, { timeout: 20000 });
+  const xLabel = await tp.$eval('#tour-x', (x) => x.getAttribute('aria-label'));
+  await tp.click('#tour-x');
+  await new Promise((r) => setTimeout(r, 800));
+  const xClosed = await tp.evaluate(() => !window.__tour.open);
+  ok('a return visit gets no tour; the button reopens it, and Escape or the close button closes it',
+    again === false && reopened && !escaped && xClosed && /close/i.test(xLabel || ''),
+    JSON.stringify({ again, reopened, escaped, xClosed, xLabel }));
+  await ctx.close();
+
+  // On a phone the card docks at the end of the screen away from its subject.
+  const ctxP = await browser.createBrowserContext();
+  const pp = await ctxP.newPage();
+  await pp.setViewport({ width: 390, height: 844 });
+  await pp.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 60000 });
+  await pp.waitForFunction(() => window.__tour && window.__tour.open && window.__tour.ready, { timeout: 30000 });
+  const covered = [];
+  for (let k = 0; k < 40; k++) {
+    await new Promise((r) => setTimeout(r, 350));   // the highlight animates for 0.2 s
+    const st = await pp.evaluate(() => {
+      const sp = document.querySelector('#tour .tour-spot'), c = document.querySelector('#tour .tour-card').getBoundingClientRect();
+      if (sp.hidden) return { step: window.__tour.step, cover: 0 };
+      const s = sp.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(s.right, c.right) - Math.max(s.left, c.left)), iy = Math.max(0, Math.min(s.bottom, c.bottom) - Math.max(s.top, c.top));
+      return { step: window.__tour.step, t: document.getElementById('tour-title').textContent, cover: (ix * iy) / (s.width * s.height) };
+    });
+    if (st.cover > 0.25) covered.push(`${st.t} ${Math.round(100 * st.cover)}%`);
+    await pp.click('#tour-next');
+    await pp.waitForFunction((b) => !window.__tour.open || (window.__tour.step !== b && window.__tour.ready), { timeout: 20000 }, st.step);
+    if (!(await pp.evaluate(() => window.__tour.open))) break;
+  }
+  ok('on a phone the tutorial card never hides more than a quarter of what it describes', covered.length === 0, covered.join(', '));
+  await ctxP.close();
+
+  const ctx2 = await browser.createBrowserContext();
+  const sp = await ctx2.newPage();
+  await sp.setViewport({ width: 1400, height: 900 });
+  await sp.goto(`${BASE}/#v=holdings&s=19`, { waitUntil: 'networkidle2', timeout: 60000 });
+  await new Promise((r) => setTimeout(r, 2000));
+  const shared = await sp.evaluate(() => ({ open: window.__tour?.open, hint: !document.getElementById('tour-hint').hidden,
+    view: window.__dash.getState().view }));
+  ok('a first visit on a shared link opens the link, with only a note beside the Tour button',
+    shared.open === false && shared.hint && shared.view === 'holdings', JSON.stringify(shared));
+  await ctx2.close();
+  ok('no page errors during the tour', terr.length === 0, terr.slice(0, 3).join(' | '));
+}
+
+// Ask on a phone: the map fills the space above the assistant; no sheet, no dark band.
+await page.setViewport({ width: 390, height: 844 });
+await new Promise((r) => setTimeout(r, 1500));
+await page.evaluate(() => { if (document.getElementById('assist').hidden) document.getElementById('assist-toggle').click(); });
+await new Promise((r) => setTimeout(r, 1800));
+const askPhone = await page.evaluate(() => {
+  const r = (el) => el.getBoundingClientRect();
+  const app = r(document.getElementById('app')), map = r(document.getElementById('mapwrap')), as = r(document.getElementById('assist'));
+  return { mapBottom: Math.round(map.bottom), appBottom: Math.round(app.bottom), assistTop: Math.round(as.top), mapH: Math.round(map.height),
+    sheet: !!document.getElementById('panel').offsetParent };
+});
+await page.evaluate(() => document.getElementById('assist-close').click());
+await page.setViewport({ width: 1400, height: 900 });
+await new Promise((r) => setTimeout(r, 1500));
+ok('with Ask open on a phone the map fills the space above it, with no chart sheet',
+  !askPhone.sheet && askPhone.mapH > 200 && Math.abs(askPhone.mapBottom - askPhone.appBottom) <= 2 && askPhone.appBottom <= askPhone.assistTop + 2,
+  JSON.stringify(askPhone));
+
+// About and Reports toggle: pressed again they return to the view the reader came from.
+const toggles = await page.evaluate(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await window.__dash.applyState({ view: 'holdings' }); await wait(1200);
+  document.getElementById('about-btn').click(); await wait(1200);
+  const on = window.__dash.getState().view, pressed = document.getElementById('about-btn').getAttribute('aria-pressed');
+  document.getElementById('about-btn').click(); await wait(1500);
+  const off = window.__dash.getState().view, unpressed = document.getElementById('about-btn').getAttribute('aria-pressed');
+  document.getElementById('reports-btn').click(); await wait(1200);
+  document.getElementById('about-btn').click(); await wait(1200);
+  document.getElementById('about-btn').click(); await wait(1500);
+  const viaReports = window.__dash.getState().view;
+  await window.__dash.applyState({ view: 'ladder' }); await wait(1200);
+  return { on, pressed, off, unpressed, viaReports };
+});
+ok('About and Reports are toggles that return to the view the reader came from',
+  toggles.on === 'about' && toggles.pressed === 'true' && toggles.off === 'holdings' && toggles.unpressed === 'false'
+  && toggles.viaReports === 'holdings', JSON.stringify(toggles));
+
+// The charts follow the map: zoomed in with nothing selected they summarise the
+// places in view, against their county and Montana; zoomed out, the state.
+const follow = await page.evaluate(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const read = () => {
+    const cards = [...document.querySelectorAll('#panel .card')];
+    const st = cards.find((c) => c.querySelector('.stats'));
+    const cmp = cards.find((c) => /compared$/.test(c.querySelector('h3')?.textContent || ''));
+    return { total: st?.querySelectorAll('.stat .v')[1]?.textContent, note: st?.querySelector('.cap')?.textContent || '',
+      lines: cmp ? [...cmp.querySelectorAll('.legend-row span')].map((x) => x.textContent.trim()) : [],
+      afterStats: !!cmp && cmp.previousElementSibling === st };
+  };
+  await window.__dash.applyState({ view: 'growth', snap: 28, selection: [], map: null }); await wait(2500);
+  const state = read();
+  await window.__dash.applyState({ map: { center: [-111.04, 45.68], zoom: 11 } }); await wait(3000);
+  const boz = read();
+  await window.__dash.applyState({ map: { center: [-114.31, 48.2], zoom: 11 } }); await wait(3000);
+  const kal = read();
+  await window.__dash.applyState({ view: 'ladder', map: null }); await wait(2500);
+  return { state, boz, kal };
+});
+ok('the charts follow the map: the places in view against their county and Montana, the state when zoomed out',
+  follow.state.lines.length === 0 && /Statewide/.test(follow.state.note)
+  && /In view/.test(follow.boz.note) && follow.boz.total !== follow.state.total && follow.boz.afterStats
+  && follow.boz.lines.join('/') === 'in view/Gallatin County/Montana'
+  && follow.kal.lines.join('/') === 'in view/Flathead County/Montana' && follow.kal.total !== follow.boz.total,
+  JSON.stringify(follow));
+
+// A selection steers the charts only while it is on screen: the reader who
+// clicked Yellowstone and then panned to Bozeman sees Bozeman, told why.
+const selView = await page.evaluate(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const read = () => {
+    const st = [...document.querySelectorAll('#panel .card')].find((c) => c.querySelector('.stats'));
+    const cmp = [...document.querySelectorAll('#panel .card')].find((c) => /compared$/.test(c.querySelector('h3')?.textContent || ''));
+    return { note: st?.querySelector('.cap')?.textContent || '', total: st?.querySelectorAll('.stat .v')[1]?.textContent,
+      lines: cmp ? [...cmp.querySelectorAll('.legend-row span')].map((x) => x.textContent.trim()) : [] };
+  };
+  const ys = window.__state.dim.counties.find((c) => c.name === 'Yellowstone').code;
+  await window.__dash.applyState({ view: 'growth', snap: 22, level: 'county', selection: [ys], map: null }); await wait(2500);
+  const state = read();
+  const r0 = window.__state.renders;
+  window.__state.map.map.jumpTo({ center: [-111.04, 45.68], zoom: 11 }); await wait(3000);
+  const boz = { ...read(), redrew: window.__state.renders > r0 };
+  await window.__dash.applyState({ view: 'ladder', level: 'township', selection: [], map: null }); await wait(2500);
+  return { state, boz };
+});
+ok('a selection steers the charts only while on screen; panned away, they follow the map and say why',
+  /Selected: Yellowstone County/.test(selView.state.note) && selView.boz.redrew
+  && /out of view/.test(selView.boz.note) && /In view/.test(selView.boz.note)
+  && selView.boz.total !== selView.state.total && selView.boz.lines.includes('Gallatin County'),
+  JSON.stringify(selView));
 
 ok('no console errors', errors.length === 0, errors.slice(0, 4).join(' | '));
 

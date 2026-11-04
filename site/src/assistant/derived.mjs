@@ -54,6 +54,14 @@ export const DERIVED = {
       return (1000 * sum('lot_created')) / ctx.stock / (ctx.years || 1);
     },
   },
+  lots_divided_per_1000_per_year: {
+    topic: 'flow', level: 'any', columns: ['divided', 'comparable'], unit: 'lots divided off per 1,000 parcels per year',
+    definition: 'lots divided off by a plat, an amended plat or a certificate of survey in the interval, per thousand parcels in stock at its closing export, per year; null under 50 parcels or where not comparable',
+    compute: (sum, ctx) => {
+      if (!(sum('comparable') > 0) || !(ctx.stock > 50)) return null;
+      return (1000 * sum('divided')) / ctx.stock / (ctx.years || 1);
+    },
+  },
   transfers_out_of_state_per_year: {
     topic: 'flow', level: 'any', columns: ['transfers_out_of_state'], unit: 'transfers per year',
     definition: 'owner changes where the mailing state also changed, per year',

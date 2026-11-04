@@ -88,3 +88,13 @@ test('the origin check admits same-site browsers and plain clients', () => {
   assert.equal(originAllowed(req({ origin: 'https://evil.example' })), false);
   assert.equal(originAllowed(req({ origin: 'https://example.org' })), true);
 });
+
+test('the fields the live API adds come back accepted, and only in their own shape', () => {
+  const ok = (turn) => validateBody({ messages: [user('q'), asst(turn), user([result(ID, '{}')])] }, opts);
+  const live = { ...use(ID, 'read_table', { table: 'threshold_edges' }), caller: { type: 'direct' } };
+  assert.equal(ok([think, { ...text('Looking.'), citations: null }, live]).ok, true);
+  assert.equal(ok([{ ...use(ID, 'read_table'), caller: 'direct' }]).ok, false);
+  assert.equal(ok([{ ...use(ID, 'read_table'), caller: { type: 'direct', extra: 1 } }]).ok, false);
+  assert.equal(ok([{ ...use(ID, 'read_table'), extra: true }]).ok, false);
+  assert.equal(ok([{ ...text('x'), citations: [{ type: 'char_location' }] }, use(ID, 'read_table')]).ok, false);
+});

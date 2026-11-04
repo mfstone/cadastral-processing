@@ -18,11 +18,17 @@
 import { loadJSON, loadTable, cube, seriesOf, sumAt } from './data.js';
 import { UnitMap, quantileBreaks, classify } from './map.js';
 import * as C from './charts.js';
+import { derivedSeries } from './compare.js';
+import { DERIVED } from '../assistant/derived.mjs';
+
+// Whether the visitor arrived on a shared link, read before the map writes its
+// own position into the address bar on load.
+const ARRIVED_ON_LINK = typeof location !== 'undefined' && location.hash.replace(/^#/, '').length > 0;
 import { REPORTS, renderReport } from './reports.js';
 import { aboutSections } from './about.js';
 import { S, applyState, getState, describeState, toHash, fromHash, bindHost, syncSnapLabel, writeHash,
-  ERA_BOUNDS, LAYER_KEYS, LAYER_IDS } from './state.js';
-import { twpCube, countyCube, countyFlow, twpFlow, activeStock, twpIds, countyIds, selectedUnits, unitFeatureId,
+  ERA_BOUNDS, LAYER_KEYS, LAYER_IDS, relayout } from './state.js';
+import { twpCube, countyCube, countyFlow, twpFlow, activeStock, twpIds, countyIds, selectedUnits, unitFeatureId, viewScope, countyAt,
   snapLabels, ivLabels, unavailableAt, FIELD_LABEL, num, CD_COLS, YB_COLS, WITNESS_TWP, WITNESS_CTY, shortCond,
   ratedOf, belowShare, pre1980Share, pctOf, camaTables, pointAt, pointMeta, taxYearOf, camaSum, condByDecade,
   timingSeries, transitionSeries, holdingsCube, hAt, holdingUnits, countyLabel, topRows, maskLowCoverage,
@@ -134,35 +140,47 @@ const fmtShort = (v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
 /** Parcel-scale legend: at deep zoom the surface IS the parcels, so the
  *  township metric's ramp is no longer what the reader is looking at. */
 function parcelLegendHTML() {
+  const n = S.dim.snapshots.length;
+  const when = S.dim.snapshots[S.snap]?.date || 'the selected vintage';
+  const latest = S.dim.snapshots[n - 1]?.date || 'the latest export';
+  if (S.view === 'growth') return growthLegendHTML(when);
   const items = PARCEL_LEGEND[S.view] || [];
   if (!items.length && S.view !== 'condition') return '';
-  const when = S.dim.snapshots[S.snap]?.date || 'the selected vintage';
   const title = `Parcels &mdash; ${VIEWS[S.view].parcelLegend || 'colour key'}`;
-  const head = S.layers.parcelFill === false
-    ? `<div class="title">${title}</div><div class="note">Fill off (Layers, under Parcels); the parcel lines and the outlines below remain.</div>`
-    : S.view === 'condition'
+  const head = S.view === 'condition'
     ? bivariateLegendHTML({ title, x: { label: 'poorer condition \u2192', name: 'DOR condition rating',
         classes: ['good or better (8 to 10)', 'average (7)', 'fair or worse (1 to 6)'] },
       y: { label: 'older \u2192', name: 'year built', classes: ['2005 on', '1980 to 2004', 'before 1980'] } })
-      + `<div class="pl"><i style="background:${cssVar('--masked')}"></i>no dwelling on record</div>`
+      + `<div class="pl"><i style="background:${cssVar('--masked')}"></i>no dwelling rating (includes commercial-only parcels)</div>`
     : `<div class="title">${title}</div>`
       + items.map(([label, tok]) => `<div class="pl"><i style="background:${cssVar('--' + tok)}"></i>${label}</div>`).join('');
-  // The one thing on the parcel map that follows the slider: the outline on
-  // the parcels that did not yet exist at the vintage shown, by period.
-  const st = periodStarts();
-  const n = S.dim.snapshots.length;
-  const cols = C.ramp('period', PERIODS.length);
-  const later = PERIODS.map(([label], k) => ({ label, color: cols[k], from: st[k], to: (st[k + 1] ?? n) - 1 }))
-    .filter((p) => p.from < n && p.to > S.snap);
-  const outlines = later.length
-    ? `<div class="note">Outlined: parcels that did not yet exist in ${when}, by the period first seen.</div>`
-      + later.map((p) => `<div class="pl"><i class="ol" style="border-color:${p.color}"></i>${p.label}</div>`).join('')
-    : `<div class="pl"><i class="ol" style="border-color:transparent"></i>no parcels created after ${when}</div>`;
-  return head + outlines
-    + '<div class="note">Colours are the 2026 state of each parcel. Parcels are '
-    + 'drawn as they exist today, so one split later shows as its pieces at every '
-    + 'date. Parcels first seen in or before the vintage a county\u2019s record arrived '
-    + 'are its baseline, not creations, and are not outlined.</div>';
+  // Said plainly, because it is the surprise: zoomed in, the slider moves the
+  // charts and the zoomed-out map but not the parcel colours.
+  return head + `<div class="note"><strong>Colours do not follow the slider.</strong> They show each parcel as recorded in ${latest}`
+    + (S.snap < n - 1 ? `; zoom out to see this view at ${when}` : '') + '. Subdivision growth shows parcels by the date they were created.</div>';
+}
+
+/** The Subdivision growth view's parcel legend: one chip per calendar year
+ *  in the three colour bands, later years dimmed, the slider's year marked. */
+function growthLegendHTML(when) {
+  const { spans, w } = growthClasses();
+  const nowYear = Number(when.slice(0, 4));
+  const prev = S.snap > 0 ? S.dim.snapshots[S.snap - 1].date : null;
+  const chips = spans.map((ys, k) => {
+    if (!ys.length) return '';
+    const a = ys[0], b = ys[ys.length - 1];
+    const label = a === b ? `’${String(a).slice(2)}` : `${String(a).slice(2)}–${String(b).slice(2)}`;
+    const future = a > nowYear || S.snap === 0;
+    const now = S.snap > 0 && nowYear >= a && nowYear <= b;
+    return `<span class="yr${future ? ' yr-future' : ''}${now ? ' yr-now' : ''}" title="${a === b ? a : `${a} to ${b}`}">`
+      + `<i style="background:${GROWTH_COLORS[k]}"></i>${label}</span>`;
+  }).join('');
+  return `<div class="title">Lots divided off &mdash; year, up to ${when}</div>`
+    + `<div class="yr-row yr-classes">${chips}</div>`
+    + `<div class="note">Seven equal intervals of about ${w.toFixed(1)} years each, oldest red to newest violet.</div>`
+    + (prev ? `<div class="note">Newest: lots divided off between ${prev} and ${when}.</div>` : '<div class="note">The first export is the baseline; nothing is divided yet.</div>')
+    + '<div class="note">Filled: lots split from a parcel by a new plat, an amended plat or a certificate of survey. Unfilled: not divided off by then, or part of a county’s baseline. A lot’s year is the year of the export it first appears in. '
+    + 'Parcels are drawn as they exist today.</div>';
 }
 
 function refreshLegendForZoom() {
@@ -171,13 +189,13 @@ function refreshLegendForZoom() {
   const parcelScale = S.map.zoom >= 10.5 && S.layers.parcels;
   if (parcelScale) {
     const html = parcelLegendHTML();
-    if (html) { l.innerHTML = html; l.dataset.mode = 'parcel'; return; }
+    if (html) { $('legend-body').innerHTML = html; l.dataset.mode = 'parcel'; return; }
   }
   if (l.dataset.mode === 'parcel') {
     l.dataset.mode = '';
     // The unit legend was kept when it was last drawn, so zooming back out
     // of the parcels restores it without re-rendering the whole view.
-    if (S.unitLegendHTML) l.innerHTML = S.unitLegendHTML; else render();
+    if (S.unitLegendHTML) $('legend-body').innerHTML = S.unitLegendHTML; else render();
   }
 }
 
@@ -188,10 +206,10 @@ function showUnitLegend(html) {
   S.unitLegendHTML = html;
   if (S.map && S.map.zoom >= 10.5 && S.layers.parcels) {
     const p = parcelLegendHTML();
-    if (p) { l.innerHTML = p; l.dataset.mode = 'parcel'; return; }
+    if (p) { $('legend-body').innerHTML = p; l.dataset.mode = 'parcel'; return; }
   }
   l.dataset.mode = '';
-  l.innerHTML = html;
+  $('legend-body').innerHTML = html;
 }
 
 function legend(ramp, lo, hi, diverging, reason) {
@@ -273,33 +291,55 @@ function countyBaselines(cov) {
   }
   return out;
 }
-function createdOutline() {
-  const born = ['coalesce', ['get', 'born'], -1];
+/* Subdivision growth colours each lot by the calendar year of the export it
+   first appears in, binned into seven equal-interval classes over the years
+   that have new lots (the first export is the baseline), oldest to newest
+   red, orange, yellow, green, cyan, blue, violet in highlighter colours. The
+   breaks are computed from the export dates, so a new export moves them. */
+const GROWTH_COLORS = ['#ff2d6f', '#ff9100', '#fff200', '#39ff14', '#00e5ff', '#3d7bff', '#d63dff'];
+function growthClasses() {
+  const years = S.dim.snapshots.slice(1).map((sn) => Number(sn.date.slice(0, 4)));
+  const lo = Math.min(...years), hi = Math.max(...years);
+  const k = GROWTH_COLORS.length;
+  const w = (hi - lo) / k || 1;
+  const classOf = (y) => Math.max(0, Math.min(k - 1, Math.floor((y - lo) / w)));
+  // The whole years that fall in each class, for the key.
+  const spans = GROWTH_COLORS.map(() => []);
+  for (let y = lo; y <= hi; y++) spans[classOf(y)].push(y);
+  return { lo, hi, w, classOf, spans };
+}
+const growthColor = (year) => GROWTH_COLORS[growthClasses().classOf(year)];
+function growthFill() {
+  // The export at which the lot was divided off (timeseries.subdivisions).
+  const born = ['coalesce', ['get', 'sdx'], -1];
   const base = S.countyBase
     ? ['match', ['to-number', ['slice', ['get', 'id'], 0, 2]],
         ...Object.entries(S.countyBase).flatMap(([c, b]) => [Number(c), b]), 0]
     : 0;
-  const st = periodStarts();
-  const n = S.dim.snapshots.length;
-  const cols = C.ramp('period', PERIODS.length);
-  const color = ['step', born, cols[0]];
-  for (let k = 1; k < st.length; k++) if (st[k] > st[k - 1] && st[k] < n) color.push(st[k], cols[k]);
-  return { filter: ['all', ['>', born, S.snap], ['>', born, base]], color };
+  // Snapshot index -> its calendar year's colour.
+  const byIdx = ['match', born];
+  S.dim.snapshots.forEach((sn, i) => { if (i > 0) byIdx.push(i, growthColor(Number(sn.date.slice(0, 4)))); });
+  byIdx.push('rgba(0,0,0,0)');
+  // Divided off by the slider date and after its county's baseline: the
+  // colour of that year. Everything else is unfilled; the parcel lines draw it.
+  return ['case', ['all', ['<=', born, S.snap], ['>', born, base], ['>', born, 0]], byIdx, 'rgba(0,0,0,0)'];
 }
 
 function parcelStyle() {
   const ord3 = C.ramp('ord3', 3);
   const ord5 = C.ramp('ord5', 5);
   const masked = cssVar('--masked');
-  const created = createdOutline();
 
   switch (S.view) {
+    case 'growth':
+      // Filled by year of creation; no outlines (see growthFill).
+      return [growthFill(), null];
     case 'ladder':
       // 4 = dedicated common area (open space, park, HOA tract): on the map in
       // chartreuse, a colour apart from the public-land green so the two kinds
       // of green cannot be read as one; off the ladder in every count.
       return [['match', ['get', 'dev'], 0, ord3[0], 1, ord3[1], 2, ord3[2],
-        4, cssVar('--open-space'), masked], created];
+        4, cssVar('--open-space'), masked], null];
     case 'ownership': {
       const by = S.measure === 'acres' ? 'loc' : 'ten';
       if (by === 'ten') {
@@ -314,7 +354,7 @@ function parcelStyle() {
         ord5[0], 5, ord5[1], 40, ord5[2], 160, ord5[3], 640, ord5[4]], null];
     case 'churn':
       return [['match', ['get', 'ten'],
-        0, masked, 1, masked, 2, ord3[1], masked], created];
+        0, masked, 1, masked, 2, ord3[1], masked], null];
     case 'holdings':
       // The paper's Figure 1 at parcel scale: the four largest holdings in the
       // county, other large holdings, small private; then the land outside
@@ -354,7 +394,7 @@ function parcelStyle() {
     case 'thresholds':
       // The 20-acre statutory line, drawn on the parcels themselves.
       return [['step', ['get', 'ac'],
-        ord5[0], 20, cssVar('--statute'), 40, ord5[2], 160, ord5[4]], created];
+        ord5[0], 20, cssVar('--statute'), 40, ord5[2], 160, ord5[4]], null];
     default:
       return [ord5[2], null];
   }
@@ -386,6 +426,9 @@ function applyParcelStyle() {
     countyCube().then((cov) => { S.countyBase = countyBaselines(cov); applyParcelStyle(); });
   }
   const [color, outline] = parcelStyle();
+  // Subdivision growth leaves lots not yet created unfilled, so it draws the
+  // parcel lines from z10 to keep the fabric readable; every view fills.
+  S.map.setParcelFill(true, { linesFrom: S.view === 'growth' ? 10 : 12.5 });
   S.map.setParcelPaint(color, outline);
 }
 
@@ -535,6 +578,248 @@ function witnessTiles(host, w, { full, statewide }) {
   }
   C.stats(host, items);
 }
+
+/* 1b. Subdivision growth -- the spread of new lots, played through time.
+   Zoomed in, every lot that exists by the slider date is filled in the colour
+   of the year it was created (GROWTH_COLORS, seven equal-interval classes); the rest of today's fabric is
+   unfilled, drawn by its parcel lines.
+   Zoomed out, each township or county is shaded by the lots divided off there
+   since the first export, on classes fixed from the end of the series so the
+   map fills in steadily as it plays. Only lots in a subdivision count
+   (timeseries.subdivisions: a plat name in the subdivision field, or a
+   subdivision named in the legal description). A new lot is a lot or a block created by
+   a division (condominium units and coverage arriving are not), counted only
+   in intervals whose two ends are both covered. */
+const PLAYER = { playing: false, timer: null, ms: 1500, focus: null };
+const SPEEDS = [['Slow', 3000], ['Normal', 1500], ['Fast', 700]];
+// Lots divided off by a plat, an amended plat or a certificate of survey
+// (timeseries.subdivisions); re-descriptions and instrument-less splits are not.
+const newLots = (f, at) => f.data.divided?.[at] ?? 0;
+
+function syncPlayer() {
+  const b = document.querySelector('[data-player="play"]');
+  if (b) {
+    b.textContent = PLAYER.playing ? 'Pause' : 'Play';
+    b.setAttribute('aria-pressed', String(PLAYER.playing));
+    b.setAttribute('aria-label', PLAYER.playing ? 'Pause the sequence' : 'Play the sequence');
+  }
+}
+function stopPlayer() {
+  PLAYER.playing = false;
+  clearTimeout(PLAYER.timer);
+  PLAYER.timer = null;
+  syncPlayer();
+}
+async function stepTo(i) {
+  await applyState({ snap: Math.max(0, Math.min(S.nSnaps - 1, i)) });
+}
+function schedule() {
+  clearTimeout(PLAYER.timer);
+  PLAYER.timer = setTimeout(tick, PLAYER.ms);
+}
+async function tick() {
+  if (!PLAYER.playing || S.view !== 'growth') { stopPlayer(); return; }
+  await stepTo(S.snap + 1);
+  if (!PLAYER.playing) return;
+  if (S.snap >= S.nSnaps - 1) stopPlayer(); else schedule();
+}
+async function togglePlay() {
+  if (PLAYER.playing) { stopPlayer(); return; }
+  PLAYER.playing = true;
+  syncPlayer();
+  // From the last export, play starts again at the first.
+  if (S.snap >= S.nSnaps - 1) { await stepTo(0); if (PLAYER.playing) schedule(); return; }
+  await tick();
+}
+
+function playerCard(panel) {
+  const prev = S.snap > 0 ? S.dim.snapshots[S.snap - 1].date : null;
+  const now = S.dim.snapshots[S.snap].date;
+  const k = C.card(panel, 'Play the series',
+    'Play steps through the exports one at a time; pause at any point, or step by hand. The slider above moves with it.');
+  const bar = document.createElement('div');
+  bar.className = 'player';
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'Sequence controls');
+  const btn = (key, text, label, fn, disabled = false) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.player = key;
+    b.textContent = text;
+    b.setAttribute('aria-label', label);
+    b.disabled = disabled;
+    b.addEventListener('click', fn);
+    b.addEventListener('focus', () => { PLAYER.focus = key; });
+    return b;
+  };
+  const last = S.nSnaps - 1;
+  bar.append(
+    btn('first', '⏮', 'First export', () => { stopPlayer(); stepTo(0); }, S.snap === 0),
+    btn('prev', '◀', 'Previous export', () => { stopPlayer(); stepTo(S.snap - 1); }, S.snap === 0),
+    btn('play', PLAYER.playing ? 'Pause' : 'Play', PLAYER.playing ? 'Pause the sequence' : 'Play the sequence', togglePlay),
+    btn('next', '▶', 'Next export', () => { stopPlayer(); stepTo(S.snap + 1); }, S.snap === last),
+    btn('last', '⏭', 'Last export', () => { stopPlayer(); stepTo(last); }, S.snap === last),
+  );
+  bar.querySelector('[data-player="play"]').classList.add('player-primary');
+  bar.querySelector('[data-player="play"]').setAttribute('aria-pressed', String(PLAYER.playing));
+  const speed = document.createElement('label');
+  speed.className = 'player-speed';
+  speed.textContent = 'Speed ';
+  const sel = document.createElement('select');
+  sel.dataset.player = 'speed';
+  for (const [name, ms] of SPEEDS) {
+    const o = document.createElement('option');
+    o.value = String(ms);
+    o.textContent = name;
+    o.selected = ms === PLAYER.ms;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', () => { PLAYER.ms = Number(sel.value); if (PLAYER.playing) schedule(); });
+  sel.addEventListener('focus', () => { PLAYER.focus = 'speed'; });
+  speed.appendChild(sel);
+  bar.appendChild(speed);
+  // Left and right step while focus is on the controls.
+  bar.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'SELECT') return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); stopPlayer(); stepTo(S.snap - 1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); stopPlayer(); stepTo(S.snap + 1); }
+  });
+  bar.addEventListener('focusout', (e) => { if (e.relatedTarget && !bar.contains(e.relatedTarget)) PLAYER.focus = null; });
+  k.appendChild(bar);
+  const where = document.createElement('div');
+  where.className = 'player-where';
+  where.setAttribute('aria-live', 'polite');
+  where.textContent = prev ? `Showing ${now}: the lots divided off by then, and those divided since ${prev}.`
+    : `Showing ${now}, the first export: the baseline every later lot is counted against.`;
+  k.appendChild(where);
+  // The panel is rebuilt each step; keep keyboard focus on the same control.
+  if (PLAYER.focus && (document.activeElement === document.body || !document.activeElement)) {
+    const t = bar.querySelector(`[data-player="${PLAYER.focus}"]`);
+    if (t && !t.disabled) t.focus({ preventScroll: true });
+    else bar.querySelector('[data-player="play"]').focus({ preventScroll: true });
+  }
+  return k;
+}
+
+VIEWS.growth = {
+  parcelLegend: 'created by the slider date',
+  label: 'Subdivision growth',
+  summary: 'Land being divided, played export by export: lots split from a parcel by a plat, an amended plat or a certificate of survey, where and how fast.',
+  legend: 'Lots divided off since the first export',
+  async render(panel) {
+    const f = S.level === 'county' ? await countyFlow() : await twpFlow();
+    const ids = S.level === 'county' ? countyIds() : twpIds();
+    const nIv = S.dim.intervals.length;
+    const upto = Math.min(S.snap, nIv);   // intervals 0 .. upto-1 end at or before the slider
+    const cum = (u, end) => {
+      let t = 0, ok = false;
+      for (let i = 0; i < end; i++) {
+        const at = u * f.nSnaps + i;
+        if ((f.data.comparable?.[at] ?? 0) > 0) { t += newLots(f, at); ok = true; }
+      }
+      return ok ? t : null;
+    };
+    // Classes fixed from the end of the series, so the map only darkens as it plays.
+    const finals = ids.map((u) => cum(u, nIv)).filter((v) => v != null && v > 0);
+    const ramp = ['--seq-1', '--seq-2', '--seq-3', '--seq-4', '--seq-5', '--seq-6', '--seq-7', '--seq-8'].map(cssVar);
+    const breaks = quantileBreaks(finals, ramp.length);
+    const colors = new Map();
+    for (const u of ids) {
+      const fid = unitFeatureId(u);
+      if (fid == null) continue;
+      const v = S.snap === 0 ? 0 : cum(u, upto);
+      colors.set(fid, v == null ? cssVar('--masked') : v === 0 ? ramp[0] : ramp[Math.min(7, classify(v, breaks))]);
+    }
+    S.map.paint(colors);
+    applyParcelStyle();
+    const top = finals.length ? Math.max(...finals) : 0;
+    legend(ramp, '0', fmtShort(top), false);
+
+    playerCard(panel);
+
+    // The selection's series, by export: new lots in the step ending there,
+    // per year, and the running total.
+    const units = selectedUnits() || ids;
+    const n = S.nSnaps;
+    const step = new Float64Array(n).fill(NaN), perYr = new Float64Array(n).fill(NaN), run = new Float64Array(n);
+    let acc = 0;
+    for (let sIdx = 1; sIdx < n; sIdx++) {
+      const i = sIdx - 1;
+      let t = 0, any = false;
+      for (const u of units) {
+        const at = u * f.nSnaps + i;
+        if ((f.data.comparable?.[at] ?? 0) > 0) { t += newLots(f, at); any = true; }
+      }
+      if (any) { step[sIdx] = t; perYr[sIdx] = t / (S.dim.intervals[i]?.years || 1); acc += t; }
+      run[sIdx] = acc;
+    }
+    const total = run[n - 1] || 0;
+    const prevDate = S.snap > 0 ? S.dim.snapshots[S.snap - 1].date : null;
+    C.stats(C.card(panel, 'Lots divided off at the selected export', selectionNote()), [
+      { value: S.snap > 0 && isFinite(step[S.snap]) ? C.fmtInt(step[S.snap]) : '–',
+        label: prevDate ? `new since ${prevDate}` : 'the first export is the baseline',
+        detail: S.snap > 0 && isFinite(perYr[S.snap]) ? `${C.fmtInt(perYr[S.snap])} a year` : '' },
+      { value: C.fmtInt(run[S.snap]), label: 'lots divided off since the first export' },
+      { value: total ? C.fmtPct((100 * run[S.snap]) / total, 0) : '–', label: 'of all the lots divided off in the series',
+        detail: `${C.fmtInt(total)} by ${S.dim.snapshots[n - 1].date}` },
+    ]);
+
+    const xl = snapLabels();
+    const k1 = C.card(panel, 'Lots divided off, running total',
+      'Lots split from a parcel by a plat, an amended plat or a certificate of survey since the first export. Intervals whose two ends are not both covered are left out, so early totals are lower bounds.');
+    C.lineChart(k1, { series: [run], labels: ['lots divided off'], colors: [cssVar('--cat-1')], xLabels: xl, fmt: C.fmtInt,
+      caption: 'Cumulative lots divided off by export' });
+    const k2 = C.card(panel, 'Lots divided off per year',
+      'Each export’s step, annualised by the days between the two exports. 2012 and 2015 have no export, so those steps span two years.');
+    C.lineChart(k2, { series: [perYr], labels: ['lots a year'], colors: [cssVar('--cat-3')], xLabels: xl, fmt: C.fmtInt,
+      caption: 'Lots divided off per year, by export' });
+
+    // By instrument: plats, amended plats, surveys.
+    const byHow = ['divided_plat', 'divided_amended', 'divided_cos'].map((m) => {
+      const out = new Float64Array(n).fill(0);
+      for (let sIdx = 1; sIdx < n; sIdx++) {
+        let t = 0;
+        for (const u of units) {
+          const at = u * f.nSnaps + sIdx - 1;
+          if ((f.data.comparable?.[at] ?? 0) > 0) t += f.data[m]?.[at] ?? 0;
+        }
+        out[sIdx] = t;
+      }
+      return out;
+    });
+    const kH = C.card(panel, 'How the land was divided',
+      'Each export’s lots divided off, by the instrument named in the legal description: a new plat or phase, an amended plat or replat, or a certificate of survey.');
+    C.stackedArea(kH, { series: byHow, labels: ['new plat', 'amended plat', 'certificate of survey'],
+      colors: [cssVar('--cat-1'), cssVar('--cat-2'), cssVar('--cat-3')], xLabels: xl, fmt: C.fmtInt,
+      caption: 'Lots divided off by instrument, by export' });
+
+    // Where the latest step's lots were made.
+    const k3 = C.card(panel, prevDate ? `Counties with the most lots divided off, ${prevDate} to ${S.dim.snapshots[S.snap].date}` : 'Counties with the most lots divided off',
+      prevDate ? 'The step ending at the selected export.' : 'Move past the first export to see where land was divided.');
+    if (S.snap > 0) {
+      const cf = await countyFlow();
+      const i = S.snap - 1;
+      const items = countyIds().map((u) => {
+        const at = u * cf.nSnaps + i;
+        return { label: countyLabel(u), value: (cf.data.comparable?.[at] ?? 0) > 0 ? newLots(cf, at) : NaN };
+      }).filter((d) => isFinite(d.value) && d.value > 0).sort((a, b) => b.value - a.value).slice(0, 10);
+      if (items.length) C.rankBars(k3, { items, color: cssVar('--cat-1'), fmt: C.fmtInt, caption: 'Lots divided off by county in this step' });
+      else k3.appendChild(document.createTextNode('No comparable lots divided off in this step.'));
+    }
+
+    const how = C.card(panel, 'Reading the growth map');
+    const d = document.createElement('div');
+    d.className = 'caveat';
+    d.innerHTML = '<ul>'
+      + '<li>Zoom in past the township grid to see the parcels themselves, filled in the colour of the year they were created (see the key on the map). Zoomed out, the shading is the running total of new lots.</li>'
+      + '<li>The parcels are today’s: a parcel that was split later shows as its pieces at every date, and a parcel that has since been merged away is not drawn.</li>'
+      + '<li>A county’s first covered export is its baseline. Its parcels then are not new lots, which is why early years look quiet where a county’s record arrived late.</li>'
+      + '<li>A lot counts when land was split where it sits (a parcel in its quarter-section is gone or smaller at the later export) and its legal description names an instrument its parent land’s did not: a new subdivision plat or phase, an amended plat or replat, or a certificate of survey (the instrument of family-transfer and other exempt splits).</li>'
+      + '<li>Not counted: a parcel re-described with the same area (a field filled in, a description reformatted), a re-split inside a plat the parent was already in with no new amendment or survey, a split naming no instrument, condominium units, and coverage arriving for the first time.</li>'
+      + '</ul>';
+    how.appendChild(d);
+  },
+};
 
 VIEWS.condition = {
   parcelLegend: 'dwelling condition and year built, DOR records (newest point)',
@@ -886,7 +1171,8 @@ async function originRankCard(panel) {
   const col = (n) => t.columns.indexOf(n);
   const si = col('s'), sti = col('st'), pi = col('parcels'), ai = col('acres'), ci = col('county_n');
   const states = S.dim.states;
-  const sel = S.selection.size && S.level === 'county' ? S.selection : null;
+  const scope = viewScope('county');
+  const sel = scope.units ? new Set(scope.units) : null;
   const acc = new Map();
   for (const r of t.rows) {
     if (Number(r[si]) !== S.snap) continue;
@@ -898,7 +1184,8 @@ async function originRankCard(panel) {
   const items = [...acc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
     .map(([st, v]) => ({ label: st, value: v }));
   const card = C.card(panel, 'Where out-of-state owners mail from',
-    'Mailing address, not residence. Select a state in the filter row to map its township detail.');
+    `${scope.kind === 'selection' ? 'The selected counties. ' : scope.kind === 'view' ? 'The counties in view. ' : 'Statewide. '}`
+    + 'Mailing address, not residence. Select a state in the filter row to map its township detail.');
   C.rankBars(card, {
     items, color: cssVar('--cat-2'),
     fmt: S.measure === 'acres' ? C.fmtAc : C.fmtInt,
@@ -1377,12 +1664,26 @@ VIEWS.review = {
   },
 };
 
-function selectionNote() {
-  if (!S.selection.size) return 'Statewide. Click a unit on the map to focus; shift-click to add.';
+function selectionNames() {
   const names = Array.from(S.selection).slice(0, 4).map((u) =>
-    S.level === 'county' ? (S.dim.counties.find((c) => c.code === u)?.name ?? u)
+    S.level === 'county' ? `${S.dim.counties.find((c) => c.code === u)?.name ?? u} County`
       : (S.twpById.get(u)?.label ?? u));
-  return `${S.selection.size} unit${S.selection.size > 1 ? 's' : ''}: ${names.join(', ')}${S.selection.size > 4 ? '…' : ''}`;
+  return `${names.join(', ')}${S.selection.size > 4 ? ` and ${S.selection.size - 4} more` : ''}`;
+}
+function selectionNote() {
+  const sc = viewScope();
+  if (sc.kind === 'selection') {
+    return `Selected: ${selectionNames()}. The charts show the selection while it is on screen; `
+      + 'pan away from it, or press Clear selection, and they follow the map again.';
+  }
+  const hidden = S.selection.size ? `Your selection (${selectionNames()}) is out of view, so the charts follow the map. ` : '';
+  if (sc.kind === 'view') {
+    const cc = sc.center ? countyAt(sc.center) : null;
+    const what = S.level === 'county' ? 'count' : 'township';
+    return `${hidden}In view: ${sc.units.length} ${what}${sc.units.length > 1 ? (what === 'count' ? 'ies' : 's') : (what === 'count' ? 'y' : '')}`
+      + `${cc ? `, centred in ${countyLabel(cc)} County` : ''}. The charts follow the map; zoom out for the whole state, or click a unit to pick one.`;
+  }
+  return `${hidden}Statewide. Zoom in and the charts follow the map; click a unit to focus, shift-click to add.`;
 }
 
 
@@ -1552,14 +1853,65 @@ VIEWS.about = {
 };
 
 /* -------------------------------------------------------------------- wiring */
+/* Each view's headline share or rate for the places in view (or selected),
+   drawn against the county at their centre and against Montana: the charts
+   above follow the map, and this says how the place compares. The formulas
+   are the views' own (DERIVED). */
+const COMPARE = {
+  ladder: ['addressed_unbuilt_share', 'Addressed but not built, compared'],
+  growth: ['lots_divided_per_1000_per_year', 'Lots divided off per 1,000 parcels a year, compared'],
+  condition: ['fair_or_worse_share', 'Dwellings in fair or worse condition, compared'],
+  ownership: ['out_of_state_share', 'Parcels with an out-of-state owner, compared'],
+  fragmentation: ['under_40ac_acreage_share', 'Acreage in parcels under 40 acres, compared'],
+  churn: ['owner_change_pct_per_year', 'Owner changes per year, compared'],
+  thresholds: ['new_lots_per_1000_per_year', 'New lots per 1,000 parcels a year, compared'],
+  holdings: ['large_acres_share_of_private', 'Private acreage in large holdings, compared'],
+};
+async function compareCard(panel) {
+  const spec = COMPARE[S.view];
+  if (!spec) return;
+  const [name, title] = spec;
+  const d = DERIVED[name];
+  const county = d.topic === 'holdings' || d.level === 'county';
+  const sc = viewScope(county ? 'county' : S.level);
+  if (sc.kind === 'state') return;   // the charts already show Montana
+  const series = [], labels = [], colors = [];
+  const here = sc.kind === 'view' ? 'in view' : 'selection';
+  series.push(await derivedSeries(name, sc.level, sc.units)); labels.push(here); colors.push(cssVar('--cat-1'));
+  // The county at the centre, unless the scope is that county already.
+  const cc = sc.center ? countyAt(sc.center) : null;
+  const sameCounty = sc.level === 'county' && sc.units.length === 1 && sc.units[0] === cc;
+  if (cc && !sameCounty) {
+    series.push(await derivedSeries(name, 'county', [cc])); labels.push(`${countyLabel(cc)} County`); colors.push(cssVar('--cat-3'));
+  }
+  series.push(await derivedSeries(name, 'county', null)); labels.push('Montana'); colors.push(cssVar('--ink-muted'));
+  const card = C.card(panel, title,
+    `${d.unit[0].toUpperCase()}${d.unit.slice(1)}: the ${here === 'in view' ? 'places in view' : 'selection'}`
+    + `${cc && !sameCounty ? `, ${countyLabel(cc)} County (at the centre of ${here === 'in view' ? 'the view' : 'the selection'})` : ''} and Montana. `
+    + 'A gap is a point below the measure’s count floor or not comparable, not zero.');
+  const pct = /%/.test(d.unit);
+  // Three lines that often end close together: the legend row names them.
+  C.lineChart(card, { series, labels, colors, xLabels: snapLabels(), directLabels: false,
+    fmt: pct ? (v) => C.fmtPct(v, 1) : (v) => (Number.isFinite(v) ? v.toFixed(v >= 10 ? 0 : 1) : '–'),
+    caption: `${title} (table view)` });
+  // After the view's first card of figures for the scope (or its first card).
+  const cards = [...panel.children].filter((c) => c !== card);
+  const anchor = cards.find((c) => c.querySelector('.stats')) || cards[0];
+  if (anchor && anchor.nextSibling !== card) panel.insertBefore(card, anchor.nextSibling);
+}
+
 async function render() {
   S.renders++;
+  lastScopeKey = scopeKey();
+  // Reports carry their own pair of dates, so no slider mark there.
+  C.setSnapshotMark(S.view === 'reports' ? null : snapLabels()[S.snap]);
   const panel = $('panel');
   panel.textContent = '';
   const l = $('legend');
   l.dataset.title = VIEWS[S.view].legend;
   try {
     await VIEWS[S.view].render(panel);
+    await compareCard(panel);
   } catch (err) {
     console.error(err);
     const c = C.card(panel, 'Could not render this view');
@@ -1592,16 +1944,86 @@ function caveatCard(panel) {
    the rest -- validation, the map, the other controls, the render, the URL.
    The controls are synced back from the state after each change, so no
    control needs to know what another one did. */
+/* One line per view for the View menu: what the reader will see there. */
+const VIEW_BRIEF = {
+  ladder: 'How much land is platted, addressed or built, and how fast new lots get built on.',
+  growth: 'Play land being divided by plats, amended plats and surveys, export by export.',
+  condition: 'The condition and age of homes, from the state’s building records.',
+  ownership: 'Public, tribal and private land, and how far owners live from it.',
+  fragmentation: 'How the land is divided by parcel size, and agricultural acreage.',
+  churn: 'How often parcels change hands, and sales to out-of-state owners.',
+  thresholds: 'Where new lots are created, and their sizes around the 20-acre line.',
+  holdings: 'Large private holdings of 640 acres or more, combined by owner, by county.',
+  review: 'Large holdings that wait on an unmade decision about the owner.',
+  reports: 'Six printable reports built from the same tables.',
+};
+
+/* The View menu: a button that opens a list of the views. Arrow keys move,
+   Enter or a click chooses, Escape or a click elsewhere closes. */
+export function openViewMenu(focusCurrent = true) {
+  const nav = $('nav'), btn = $('views-btn');
+  if (!nav || !btn) return;
+  nav.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+  if (focusCurrent) (nav.querySelector('[aria-checked="true"]') || nav.firstElementChild)?.focus();
+}
+export function closeViewMenu(refocus = false) {
+  const nav = $('nav'), btn = $('views-btn');
+  if (!nav || nav.hidden) return;
+  nav.hidden = true;
+  btn.setAttribute('aria-expanded', 'false');
+  if (refocus) btn.focus();
+}
+
 function buildControls() {
   const nav = $('nav');
   for (const [k, v] of Object.entries(VIEWS)) {
+    if (k === 'about' || k === 'reports') continue;   // Reports and About have their own buttons
     const b = document.createElement('button');
-    b.textContent = v.label;
+    b.type = 'button';
     b.dataset.view = k;
+    b.setAttribute('role', 'menuitemradio');
+    b.setAttribute('aria-checked', String(k === S.view));
     b.setAttribute('aria-selected', String(k === S.view));
-    b.addEventListener('click', () => applyState({ view: k }));
+    const t = document.createElement('span');
+    t.className = 'vi-t';
+    t.textContent = v.label;
+    const d = document.createElement('span');
+    d.className = 'vi-d';
+    d.textContent = VIEW_BRIEF[k] || '';
+    b.append(t, d);
+    b.addEventListener('click', () => { closeViewMenu(true); applyState({ view: k }); });
     nav.appendChild(b);
   }
+  const vbtn = $('views-btn');
+  vbtn.addEventListener('click', () => ($('nav').hidden ? openViewMenu() : closeViewMenu()));
+  vbtn.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openViewMenu(); }
+  });
+  nav.addEventListener('keydown', (e) => {
+    const items = [...nav.children];
+    const k = items.indexOf(document.activeElement);
+    const to = (n) => items[(n + items.length) % items.length].focus();
+    if (e.key === 'ArrowDown') { e.preventDefault(); to(k + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); to(k - 1); }
+    else if (e.key === 'Home') { e.preventDefault(); to(0); }
+    else if (e.key === 'End') { e.preventDefault(); to(items.length - 1); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeViewMenu(true); }
+    else if (e.key === 'Tab') closeViewMenu();
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!$('nav').hidden && !$('viewmenu').contains(e.target)) closeViewMenu();
+  });
+  // About and Reports are toggles: pressed again, they put back the view the
+  // reader came from (Development when the page was opened on them).
+  let cameFrom = null;
+  const toggleView = (v) => {
+    if (S.view === v) { applyState({ view: cameFrom && cameFrom !== v ? cameFrom : 'ladder' }); return; }
+    if (S.view !== 'about' && S.view !== 'reports') cameFrom = S.view;
+    applyState({ view: v });
+  };
+  $('about-btn').addEventListener('click', () => toggleView('about'));
+  $('reports-btn').addEventListener('click', () => toggleView('reports'));
   const slider = $('snap');
   slider.max = String(S.nSnaps - 1);
   slider.value = String(S.snap);
@@ -1636,13 +2058,130 @@ function buildControls() {
 
 /** The camera is state too: a moved map writes itself into the URL. */
 let moveTimer = null;
+let lastScopeKey = null;
+function scopeKey() { const sc = viewScope(); return `${sc.kind}|${S.level}|${sc.units ? sc.units.join(',') : ''}`; }
 function onMoveEnd() {
   clearTimeout(moveTimer);
   moveTimer = setTimeout(() => {
+    // Still flying (a view change moving the camera): its own move-end comes
+    // after, by which time that change has drawn the panel.
+    if (S.map.map.isMoving()) return;
     const v = S.map.getView();
     S.mapView = { center: v.center, zoom: v.zoom };
     writeHash();
-  }, 250);
+    // The charts follow the map: redraw when the places in view change, or
+    // when a selection scrolls into or out of view.
+    const k = scopeKey();
+    if (lastScopeKey !== null && k !== lastScopeKey && !VIEWS[S.view].full) render();
+    lastScopeKey = k;
+  }, 300);
+}
+
+/* ---------------------------------------------------------------- phones
+   One application at every width; below 700 px it behaves as a phone app:
+   the map takes the screen, the panel is a sheet over it that can be dragged
+   up (and scrolled inside), the layer list starts closed and the legend shows
+   colours and classes with its notes behind a More button. The defaults are
+   re-applied whenever the width crosses the line (a rotation, a resized
+   window), and the charts are redrawn when the width changes, because they are
+   drawn to the width they have. */
+const PHONE = typeof window !== 'undefined' ? window.matchMedia('(max-width: 700px)') : null;
+const SHEET_SNAPS = [0.32, 0.62, 0.94];   // share of the area below the filters
+let sheetFrac = SHEET_SNAPS[0];
+
+function setSheet(frac) {
+  const main = document.querySelector('main');
+  if (!main) return;
+  sheetFrac = Math.max(0.18, Math.min(0.96, frac));
+  main.style.setProperty('--sheet-h', `${(100 * sheetFrac).toFixed(1)}%`);
+  const g = $('sheet-grip');
+  if (g) g.setAttribute('aria-valuenow', String(Math.round(100 * sheetFrac)));
+}
+const nearestSnap = (f) => SHEET_SNAPS.reduce((a, b) => (Math.abs(b - f) < Math.abs(a - f) ? b : a));
+
+function setupSheet() {
+  const g = $('sheet-grip');
+  const main = document.querySelector('main');
+  if (!g || !main) return;
+  g.setAttribute('role', 'slider');
+  g.setAttribute('aria-valuemin', '18');
+  g.setAttribute('aria-valuemax', '96');
+  let drag = null;
+  g.addEventListener('pointerdown', (e) => {
+    drag = { y: e.clientY, f: sheetFrac, moved: false };
+    g.setPointerCapture(e.pointerId);
+    main.classList.add('sheet-dragging');
+  });
+  g.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const h = main.getBoundingClientRect().height || 1;
+    const dy = drag.y - e.clientY;
+    if (Math.abs(dy) > 4) drag.moved = true;
+    setSheet(drag.f + dy / h);
+  });
+  const done = () => {
+    if (!drag) return;
+    main.classList.remove('sheet-dragging');
+    // A tap steps up through the heights and back down to the peek.
+    if (!drag.moved) {
+      const k = SHEET_SNAPS.indexOf(nearestSnap(sheetFrac));
+      setSheet(SHEET_SNAPS[(k + 1) % SHEET_SNAPS.length]);
+    } else setSheet(nearestSnap(sheetFrac));
+    drag = null;
+  };
+  g.addEventListener('pointerup', done);
+  g.addEventListener('pointercancel', done);
+  // Keyboard: Enter/Space step like a tap (the click below), arrows move.
+  g.addEventListener('click', (e) => {
+    if (e.detail !== 0) return;   // a pointer tap is handled on pointerup
+    const k = SHEET_SNAPS.indexOf(nearestSnap(sheetFrac));
+    setSheet(SHEET_SNAPS[(k + 1) % SHEET_SNAPS.length]);
+  });
+  g.addEventListener('keydown', (e) => {
+    const k = SHEET_SNAPS.indexOf(nearestSnap(sheetFrac));
+    if (e.key === 'ArrowUp') { e.preventDefault(); setSheet(SHEET_SNAPS[Math.min(SHEET_SNAPS.length - 1, k + 1)]); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSheet(SHEET_SNAPS[Math.max(0, k - 1)]); }
+  });
+  setSheet(SHEET_SNAPS[0]);
+}
+
+function setLegendExpanded(on) {
+  const l = $('legend'), b = $('legend-more');
+  if (!l || !b) return;
+  l.classList.toggle('expanded', on);
+  b.setAttribute('aria-expanded', String(on));
+  b.textContent = on ? 'Less' : 'More';
+}
+
+function setupPhone() {
+  setupSheet();
+  $('legend-more')?.addEventListener('click', () => setLegendExpanded(!$('legend').classList.contains('expanded')));
+  $('filters-more')?.addEventListener('click', () => {
+    const open = !$('filters').classList.contains('open');
+    $('filters').classList.toggle('open', open);
+    $('filters-more').setAttribute('aria-expanded', String(open));
+    // The map's box changed: tell it.
+    requestAnimationFrame(() => S.map?.map?.resize());
+  });
+  const apply = () => {
+    const phone = !!PHONE?.matches;
+    if ($('layers')) $('layers').open = !phone;
+    setLegendExpanded(!phone);
+    // The map credit starts folded to its (i) button on a phone, where its
+    // text would sit on the legend; it opens with a tap.
+    const attrib = document.querySelector('.maplibregl-ctrl-attrib');
+    if (attrib && phone) attrib.classList.remove('maplibregl-compact-show');
+    setSheet(SHEET_SNAPS[0]);
+  };
+  apply();
+  PHONE?.addEventListener('change', () => { apply(); relayout(); });
+  // Redraw on a width change only: a phone's address bar showing and hiding
+  // changes the height on every scroll and must not redraw the charts.
+  let w = window.innerWidth, t = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(t);
+    t = setTimeout(() => { if (window.innerWidth !== w) { w = window.innerWidth; relayout(); } }, 250);
+  });
 }
 
 export async function boot() {
@@ -1682,7 +2221,7 @@ export async function boot() {
         ['stage', L.dev_stage[Number(props.dev)] ? L.dev_stage[Number(props.dev)].replace(/_/g, ' ') : 'unknown'],
         ['tenure', (L.tenure[Number(props.ten)] || '').replace('_', ' ')],
         ['owner distance', L.locality[Number(props.loc)] || '-'],
-        ['created', bornTxt + (born === S.snap ? ' \u00b7 outlined in magenta at this slider position' : '')],
+        ['created', bornTxt],
       ];
       if (props.hs != null && Number(props.hs) >= 0) {
         const cls = (L.holding_size || [])[Number(props.hs)] || '';
@@ -1692,6 +2231,12 @@ export async function boot() {
       }
       if (props.cd != null && Number(props.cd) >= 0) {
         rows.push(['dwelling condition', `${(L.condition || [])[Number(props.cd)] || '-'} · DOR rating, tax year ${S.meta.cama?.tax_year || 2026}`]);
+      } else if (L.dev_stage[Number(props.dev)] === 'built') {
+        rows.push(['dwelling condition', 'not rated: no dwelling rating on record (commercial buildings and outbuildings are not rated; see About)']);
+      }
+      if (Number(props.sdx) > 0) {
+        const how = ['', 'a subdivision plat', 'an amended plat', 'a certificate of survey'][Number(props.sdh)] || 'a division';
+        rows.push(['divided off', `${S.dim.snapshots[Number(props.sdx)]?.date || ''} by ${how}`]);
       }
       if (props.yb != null && Number(props.yb) > 0) rows.push(['year built', `${Number(props.yb)} (earliest dwelling on the parcel)`]);
       if (Number(props.res)) rows.push(['', 'inside a reservation']);
@@ -1742,14 +2287,19 @@ export async function boot() {
   }
   buildControls();
   // On a phone the layer panel starts closed; the map is the point.
-  if (window.matchMedia('(max-width: 700px)').matches && $('layers')) $('layers').open = false;
+  setupPhone();
   // A pasted link is a state: it is applied before the first render, and a
   // link edited in the address bar afterwards is applied the same way.
   const { patch, warnings } = fromHash(location.hash, S.dim);
   if (warnings.length) console.warn('link:', warnings.join('; '));
   await applyState(patch, { source: 'hash', force: true });
   window.addEventListener('hashchange', () => applyState(fromHash(location.hash, S.dim).patch, { source: 'hash' }));
-  enableAssistant();
+  // The assistant's button is probed first so the tour can include it; the
+  // tour starts by itself on a first visit and is a header button after.
+  await enableAssistant();
+  const { initTour } = await import('./tour.js');
+  window.__tour = initTour({ applyState, getState, sharedLink: ARRIVED_ON_LINK,
+    menu: { open: () => openViewMenu(false), close: () => closeViewMenu() } });
 }
 
 /** The Ask button appears only where the assistant's endpoint answers: a

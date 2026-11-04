@@ -148,6 +148,16 @@ body {
 }
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 h1 { font-size: 17px; }
+/* Two faces with two jobs. The serif is the application's voice: every
+   button, the application's name, and the titles of cards, the tutorial and
+   the assistant. The sans carries the reading: body text, captions, labels,
+   tables, and the headings that sit inside prose. Source Serif 4 is
+   self-hosted (the CSP allows fonts from this origin only). */
+:root { --serif: 'Source Serif 4 Variable', 'Source Serif 4', Georgia, 'Times New Roman', serif; }
+button, .card > h3, h1, #tour h2, .assist-head h2, .vi-t { font-family: var(--serif); }
+h1 { font-size: 19px; font-weight: 650; letter-spacing: -0.005em; }
+.card > h3 { font-size: 15px; font-weight: 650; letter-spacing: 0; }
+button { font-feature-settings: 'lnum' 1; }
 h2 { font-size: 13px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .06em; }
 h3 { font-size: 13px; }
 a { color: var(--ui); }
@@ -162,15 +172,33 @@ header {
   border-bottom: 1px solid var(--grid);
 }
 header .sub { color: var(--ink-2); font-size: 12px; }
-nav { display: flex; gap: 2px; margin-left: auto; }
-nav button {
-  font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer;
-  background: transparent; color: var(--ink-2);
-  border: 1px solid transparent; border-radius: 6px;
-}
-nav button[aria-selected="true"] {
-  background: var(--ui); color: var(--ui-ink); border-color: var(--ui);
-}
+/* The header's controls, on the right: the View menu, then About, the
+   tutorial, the theme and the assistant. */
+#hdr-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.hbtn { font-family: var(--serif); font-size: 14px; padding: 5px 12px; min-height: 32px; cursor: pointer;
+  border: 1px solid var(--axis); border-radius: 7px; background: var(--surface-1); color: var(--ink-1); }
+.hbtn:hover { border-color: var(--ui); }
+.hbtn[aria-pressed="true"] { background: var(--ui); border-color: var(--ui); color: var(--ui-ink); }
+#views-btn.hbtn-strong { border-color: var(--ui); }
+#views-btn .vm-k { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); }
+#views-btn #views-current { font-weight: 650; }
+#views-btn .vm-caret { color: var(--ink-muted); margin-left: 2px; }
+#theme { padding: 5px 10px; }
+#viewmenu { position: relative; }
+#nav { position: absolute; right: 0; top: calc(100% + 6px); z-index: 45; width: min(400px, calc(100vw - 24px));
+  max-height: min(70vh, 560px); overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  background: var(--surface-1); border: 1px solid var(--axis); border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,.18); }
+#nav[hidden] { display: none; }
+#nav button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; width: 100%;
+  padding: 7px 10px 7px 12px; border: 0; border-left: 3px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--ink-1); cursor: pointer; }
+#nav button:hover, #nav button:focus-visible { background: var(--page); outline: none; }
+#nav button:focus-visible { box-shadow: inset 0 0 0 2px var(--ui); }
+#nav button[aria-checked="true"] { border-left-color: var(--ui); background: color-mix(in srgb, var(--ui) 9%, transparent); }
+#nav .vi-t { font-size: 15px; font-weight: 650; }
+#nav .vi-d { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px;
+  line-height: 1.35; color: var(--ink-2); }
 
 /* Filters live in one row above the content. */
 #filters {
@@ -212,6 +240,22 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #legend .pl { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
 #legend .pl i { width: 11px; height: 11px; border-radius: 2px; flex: none; }
 #legend .pl i.ol { width: 9px; height: 9px; background: transparent; border: 2px solid; }
+/* Subdivision growth: one chip per calendar year, in three bands. */
+#legend .yr-band { margin-top: 5px; }
+#legend .yr-lab { font-size: 10.5px; color: var(--ink-2); font-weight: 600; }
+#legend .yr-lab span { font-weight: 400; color: var(--ink-muted); }
+#legend .yr-row { display: flex; gap: 3px; margin-top: 2px; }
+#legend .yr-classes { gap: 4px; margin: 4px 0 2px; }
+#legend .yr-classes .yr { width: auto; min-width: 30px; }
+#legend .yr-classes .yr i { width: 100%; height: 13px; }
+#legend .yr { display: flex; flex-direction: column; align-items: center; width: 20px; font-size: 9.5px; color: var(--ink-2);
+  font-variant-numeric: tabular-nums; }
+#legend .yr i { width: 18px; height: 12px; border-radius: 2px; border: 1px solid rgba(0,0,0,.18); box-sizing: border-box; }
+#legend .yr.yr-none i { border-style: dashed; }
+#legend .yr.yr-none { color: var(--ink-muted); }
+#legend .yr.yr-future { opacity: .35; }
+#legend .yr.yr-now { font-weight: 700; color: var(--ink-1); }
+#legend .yr.yr-now i { outline: 2px solid var(--ink-1); outline-offset: 1px; }
 #legend .bv { display: grid; grid-template-columns: 14px max-content; gap: 3px 6px; align-items: center; margin: 2px 0; }
 #legend .bv .ylab { writing-mode: vertical-rl; transform: rotate(180deg); color: var(--ink-muted); font-size: 10px; text-align: center; }
 #legend .bv .grid { display: grid; grid-template-columns: repeat(3, 20px); grid-template-rows: repeat(3, 20px); gap: 2px; }
@@ -254,9 +298,14 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
   header { gap: 6px 10px; padding: 8px 10px; }
   h1 { font-size: 15px; }
   header .sub { display: none; }
-  nav { margin-left: 0; width: 100%; min-width: 0; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; }
+  #hdr-actions { margin-left: 0; width: 100%; min-width: 0; gap: 6px; }
+  #viewmenu { flex: 1 1 auto; min-width: 0; }
+  #views-btn { width: 100%; text-align: left; }
+  #nav { left: 0; right: auto; width: calc(100vw - 20px); }
+  h1 { font-size: 17px; }
   header, #filters { min-width: 0; }
-  nav button { flex: none; padding: 7px 10px; min-height: 36px; }
+  .hbtn { min-height: 36px; padding: 6px 8px; font-size: 13px; }
+  #views-btn .vm-k { display: none; }
   #filters { gap: 6px 12px; padding: 6px 10px; }
   #timewrap { min-width: 0; flex-basis: 100%; }
   #snaplabel { min-width: 0; }
@@ -303,6 +352,9 @@ svg .lab-direct {
 }
 svg .hit { fill: transparent; cursor: crosshair; }
 svg .crosshair { stroke: var(--ink-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+/* The slider's position on the time charts: ink, not a series colour. */
+svg .snapmark line { stroke: var(--ink-2); stroke-width: 1.5; }
+svg .snapmark text { fill: var(--ink-2); font-size: 10px; font-weight: 600; paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round; }
 svg .refline { stroke: var(--statute); stroke-width: 2; }
 svg .reflab { fill: var(--statute); font-size: 10.5px; font-weight: 600; }
 
@@ -339,16 +391,16 @@ details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink
 
 /* -------------------------------------------------------------- assistant */
 #assist-toggle {
-  font: inherit; font-size: 12px; padding: 4px 11px; border: 1px solid var(--ui); border-radius: 6px;
+  font: inherit; font-size: 14px; padding: 5px 12px; min-height: 32px; border: 1px solid var(--ui); border-radius: 7px;
   background: var(--ui); color: var(--ui-ink); cursor: pointer;
 }
 #assist-toggle[aria-expanded="true"] { background: var(--surface-1); color: var(--ui); }
 /* A drawer over the panel on wide screens, the whole screen on narrow ones;
    the map is never reflowed. */
 #assist {
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 30;
+  position: fixed; top: 0; right: 0; bottom: 0; width: var(--assist-w); z-index: 30;
   display: flex; flex-direction: column; background: var(--surface-1);
-  border-left: 1px solid var(--grid); box-shadow: -6px 0 24px rgba(0,0,0,.12); font-size: 13px;
+  border-left: 1px solid var(--grid); font-size: 13px;
 }
 #assist[hidden] { display: none; }
 .assist-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--grid); }
@@ -384,8 +436,91 @@ details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink
 #assist-send { background: var(--ui); color: var(--ui-ink); border-color: var(--ui); }
 #assist-send:disabled { opacity: .6; cursor: default; }
 #assist-stop[hidden] { display: none; }
+#assist-notice { margin: 0 12px 8px; padding: 9px 11px; border: 1px solid var(--axis); border-left: 3px solid var(--ui); border-radius: 7px; background: var(--page); color: var(--ink-1); font-size: 12.5px; line-height: 1.45; }
+#assist-notice[hidden] { display: none; }
+#assist-q:disabled { opacity: .6; }
 #assist-privacy { margin: 0; padding: 0 12px 10px; font-size: 10.5px; color: var(--ink-muted); line-height: 1.4; }
-@media (max-width: 1000px) { #assist { width: 100vw; border-left: 0; } }
+/* The Subdivision growth player. */
+.player { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; }
+.player button { min-width: 40px; min-height: 36px; padding: 5px 10px; border: 1px solid var(--axis); border-radius: 7px;
+  background: var(--surface-1); color: var(--ink-1); font-size: 15px; cursor: pointer; }
+.player button:disabled { opacity: .4; cursor: default; }
+.player button.player-primary { min-width: 84px; background: var(--ui); border-color: var(--ui); color: var(--ui-ink); font-weight: 650; }
+.player .player-speed { margin-left: auto; font-size: 12px; color: var(--ink-2); }
+.player .player-speed select { font: inherit; font-size: 12px; margin-left: 4px; }
+.player-where { font-size: 12px; color: var(--ink-2); }
+
+/* The guided tour. A shade over the page with a cut-out round the part being
+   described, and a card beside it. The page underneath does not respond
+   while the tour is open; the tour drives it. */
+#tourwrap { position: relative; display: inline-flex; align-items: center; }
+#tour-btn[hidden] { display: none; }
+#tour-btn.tour-pulse { border-color: var(--ui); color: var(--ui); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui) 22%, transparent); }
+#tour-hint { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: max-content; max-width: 240px;
+  background: var(--surface-1); border: 1px solid var(--ui); border-radius: 7px; padding: 6px 8px 6px 10px;
+  font-size: 12px; color: var(--ink-1); box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+#tour-hint[hidden] { display: none; }
+#tour-hint-x { font: inherit; border: 0; background: none; color: var(--ink-muted); cursor: pointer; padding: 0 2px; margin-left: 4px; }
+#tour { position: fixed; inset: 0; z-index: 60; }
+#tour[hidden] { display: none; }
+#tour .tour-block { position: absolute; inset: 0; }
+#tour.tour-dim .tour-block { background: rgba(10, 14, 12, .55); }
+#tour .tour-spot { position: absolute; border-radius: 8px; pointer-events: none;
+  box-shadow: 0 0 0 2px var(--ui), 0 0 0 200vmax rgba(10, 14, 12, .55); transition: all .2s ease; }
+#tour .tour-spot[hidden] { display: none; }
+#tour .tour-card { position: absolute; width: min(360px, calc(100vw - 24px)); box-sizing: border-box;
+  background: var(--surface-1); color: var(--ink-1); border: 1px solid var(--axis); border-radius: 10px;
+  padding: 14px 16px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.25); font-size: 13px; line-height: 1.5; }
+#tour .tour-card.tour-docked { left: 12px !important; right: 12px; bottom: 12px; top: auto !important; width: auto; }
+/* On a phone the card docks at whichever end leaves the subject in view. */
+#tour .tour-card.tour-docked.tour-docked-top { top: 12px !important; bottom: auto; }
+#tour .tour-count { font-size: 11px; color: var(--ink-muted); margin-bottom: 2px; }
+#tour .tour-x { position: absolute; top: 6px; right: 6px; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 8px;
+  background: transparent; color: var(--ink-2); font-size: 22px; line-height: 1; cursor: pointer; }
+#tour .tour-x:hover, #tour .tour-x:focus-visible { background: var(--page); color: var(--ink-1); }
+#tour h2 { padding-right: 34px; }
+#tour h2 { margin: 0 0 6px; font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--ink-1); }
+#tour p { margin: 0 0 10px; color: var(--ink-2); }
+#tour .tour-bar { height: 3px; background: var(--grid); border-radius: 2px; overflow: hidden; margin-bottom: 10px; }
+#tour .tour-bar i { display: block; height: 100%; background: var(--ui); }
+#tour .tour-actions { display: flex; align-items: center; gap: 6px; }
+#tour .tour-gap { flex: 1; }
+#tour .tour-actions button { font: inherit; font-size: 12.5px; padding: 6px 12px; min-height: 32px; border-radius: 6px;
+  border: 1px solid var(--axis); background: var(--surface-1); color: var(--ink-2); cursor: pointer; }
+#tour .tour-actions button:disabled { opacity: .45; cursor: default; }
+#tour .tour-actions .tour-primary { background: var(--ui); border-color: var(--ui); color: var(--ui-ink); }
+#tour .tour-actions .tour-link { border-color: transparent; padding-left: 0; color: var(--ink-muted); }
+@media (prefers-reduced-motion: reduce) { #tour .tour-spot { transition: none; } }
+@media print { #tour, #tourwrap { display: none !important; } }
+
+/* The assistant does not cover the dashboard: it takes a share of the screen
+   and the dashboard reflows into the rest. Wide: a docked column on the right,
+   the dashboard narrower beside it. Medium: the same column, with the map
+   stacked above the charts so neither is squeezed into a sliver. Narrow: a
+   bottom sheet, the dashboard in the top of the screen. */
+:root { --assist-w: clamp(340px, 34vw, 460px); --assist-h: 56dvh; }
+body.assist-open #app { margin-right: var(--assist-w); }
+@media (max-width: 1400px) and (min-width: 1001px) {
+  body.assist-open main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(240px, 42vh) minmax(0, 1fr); }
+  body.assist-open #mapwrap { border-right: 0; border-bottom: 1px solid var(--grid); min-height: 240px; }
+  body.assist-open #panel { min-height: 0; }
+  body.assist-open.full main { grid-template-rows: minmax(0, 1fr); }
+}
+@media (max-width: 1000px) {
+  #assist { top: auto; width: 100vw; height: var(--assist-h); border-left: 0; border-top: 1px solid var(--axis);
+    border-radius: 12px 12px 0 0; box-shadow: 0 -4px 18px rgba(0,0,0,.10); }
+  body.assist-open #app { margin-right: 0; height: calc(100dvh - var(--assist-h)); }
+  body.assist-open main { grid-template-rows: minmax(110px, 45%) minmax(0, 1fr); }
+  body.assist-open #mapwrap { min-height: 110px; }
+  body.assist-open.full main { grid-template-rows: minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  :root { --assist-h: 60dvh; }
+  /* The map strip above the sheet is small: the overlays come back when it closes. */
+  body.assist-open header .sub, body.assist-open #filters, body.assist-open #legend, body.assist-open #layers,
+  body.assist-open #parcelinfo, body.assist-open .maplibregl-ctrl-bottom-right { display: none; }
+}
+@media print { body.assist-open #app { margin-right: 0; height: auto; } }
 
 /* ---------------------------------------------------------------- reports */
 .rform { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; margin-top: 6px; }
@@ -472,3 +607,65 @@ details.tableview summary { cursor: pointer; font-size: 11.5px; color: var(--ink
   #panel { display: block; overflow: visible; padding: 0; max-width: none; margin: 0; }
   .report { width: auto; max-width: none; padding: 0; margin: 0; border: 0; box-shadow: none; }
 }
+
+/* A phone (below 700 px): the map takes the screen; the panel is a sheet
+   over its lower part with a handle to drag it up (to cover the map) or down;
+   the legend shows colours and classes, its notes behind More; the header's
+   buttons sit in two even rows. setupPhone() in app.js drives the sheet. */
+#sheet-grip, #legend-more, #filters-more { display: none; }
+@media (max-width: 700px) {
+  main { display: block; position: relative; min-height: 0; --sheet-h: 32%; --peek: 32%; }
+  #mapwrap { position: absolute; top: 0; left: 0; right: 0; bottom: calc(var(--peek) + 24px); min-height: 0; border: 0; }
+  #sheet-grip { display: flex; position: absolute; left: 0; right: 0; bottom: var(--sheet-h); height: 26px; z-index: 6;
+    align-items: center; justify-content: center; padding: 0; margin: 0; cursor: grab; touch-action: none;
+    background: var(--surface-1); border: 1px solid var(--axis); border-bottom: 0; border-radius: 14px 14px 0 0;
+    box-shadow: 0 -4px 14px rgba(0, 0, 0, .14); transition: bottom .22s ease; }
+  #sheet-grip span { width: 44px; height: 5px; border-radius: 3px; background: var(--ink-muted); }
+  #sheet-grip:focus-visible { outline: 2px solid var(--ui); outline-offset: -3px; }
+  #panel { position: absolute; left: 0; right: 0; bottom: 0; height: var(--sheet-h); z-index: 5; box-sizing: border-box;
+    overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+    background: var(--surface-1); padding: 4px 10px 28px; gap: 12px; transition: height .22s ease; }
+  main.sheet-dragging #panel, main.sheet-dragging #sheet-grip { transition: none; }
+  body.full main { display: grid; }
+  body.full #panel { position: static; height: auto; }
+  body.full #sheet-grip { display: none; }
+  /* With the assistant open the screen is shared: the map takes what is left
+     above it, without the chart sheet (the assistant answers in words; close
+     it to read the charts) or the header's second row of buttons. */
+  body.assist-open:not(.full) #panel, body.assist-open:not(.full) #sheet-grip { display: none; }
+  body.assist-open:not(.full) #mapwrap { bottom: 0; }
+  body.assist-open #hdr-actions > :not(#viewmenu) { display: none; }
+  body.assist-open header { padding-bottom: 6px; }
+  body.assist-open h1 { font-size: 15px; }
+  /* The filter row is hidden while Ask is open, so the grid has two rows, not three. */
+  body.assist-open #app { overflow: hidden; grid-template-rows: auto minmax(0, 1fr); }
+
+  #legend { max-width: calc(100vw - 96px); left: 8px; bottom: 8px; padding: 6px 8px 5px; }
+  #legend:not(.expanded) #legend-body .note { display: none; }
+  #legend-more { display: inline-block; margin-top: 5px; font-size: 11.5px; padding: 3px 10px; min-height: 26px;
+    border: 1px solid var(--axis); border-radius: 6px; background: var(--surface-1); color: var(--ink-2); cursor: pointer; }
+  #legend .yr-classes { gap: 2px; min-width: 238px; }
+  #legend .yr-classes .yr { min-width: 0; flex: 1 1 0; font-size: 9px; white-space: nowrap; letter-spacing: -0.02em; }
+  #legend .yr-classes .yr i { height: 12px; }
+
+  /* The filter row folds: the slider and a Filters button stay, the rest opens below. */
+  #filters-more { display: inline-flex; align-items: center; font-size: 13px; padding: 5px 12px; min-height: 34px;
+    border: 1px solid var(--axis); border-radius: 7px; background: var(--surface-1); color: var(--ink-1); cursor: pointer; }
+  #filters-more::after { content: " ▾"; color: var(--ink-muted); }
+  #filters-more[aria-expanded="true"]::after { content: " ▴"; }
+  #filters:not(.open) > :not(#timewrap):not(#filters-more) { display: none !important; }
+  /* The slider and the Filters button share the first row; the controls wrap below it. */
+  #timewrap { flex: 1 1 calc(100% - 124px) !important; min-width: 0; }
+  #timewrap > label[for="snap"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #hdr-actions { flex-wrap: wrap; gap: 6px; }
+  #viewmenu { flex: 1 1 100%; }
+  #hdr-actions > .hbtn, #tourwrap { flex: 1 1 0; min-width: 0; }
+  #tourwrap .hbtn { width: 100%; }
+  .hbtn { padding: 7px 10px; min-height: 38px; }
+  #theme { flex: 0 0 auto !important; }
+}
+
+/* Last word on the button face: many rules above reset buttons with
+   `font: inherit` (which brings back the body's sans), and one button has an
+   inline style. Every button, everywhere, wears the serif. */
+button { font-family: var(--serif) !important; }

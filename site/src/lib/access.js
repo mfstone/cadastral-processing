@@ -46,7 +46,84 @@ export async function activeStock(topic) {
 }
 export const twpIds = () => S.dim.townships.map((t) => t.id);
 export const countyIds = () => S.dim.counties.map((c) => c.code);
-export const selectedUnits = () => (S.selection.size ? Array.from(S.selection) : null);
+/* ---- the scope the charts summarise ---------------------------------------
+   A selection (a click) is the scope while it is in view. Otherwise the charts
+   follow the map: zoomed in, the townships (or, at county level, the
+   counties) whose centres are in view; zoomed out to most of the state,
+   Montana as a whole (null). A place in view is also compared with the
+   county at the centre of what is shown and with the state (compareCard). */
+let scopeIdx = null;
+function geomBox(geom) {
+  let w = Infinity, so = Infinity, e = -Infinity, n = -Infinity, sx = 0, sy = 0, k = 0;
+  const polys = geom.type === 'MultiPolygon' ? geom.coordinates : [geom.coordinates];
+  for (const poly of polys) for (const [x, y] of poly[0]) {
+    if (x < w) w = x; if (y < so) so = y; if (x > e) e = x; if (y > n) n = y; sx += x; sy += y; k++;
+  }
+  return { b: [w, so, e, n], c: k ? [sx / k, sy / k] : [(w + e) / 2, (so + n) / 2], rings: polys.map((p) => p[0]) };
+}
+function scopeIndex() {
+  if (scopeIdx || !S.geo || !S.twpByKey) return scopeIdx;
+  const twp = new Map(), cty = new Map();
+  for (const f of S.geo.townships?.features || []) {
+    const t = S.twpByKey.get(f.properties.tr_key);
+    if (t && f.geometry) twp.set(t.id, geomBox(f.geometry));
+  }
+  for (const f of S.geo.counties?.features || []) if (f.geometry) cty.set(Number(f.properties.county_n), geomBox(f.geometry));
+  scopeIdx = { township: twp, county: cty };
+  return scopeIdx;
+}
+function inRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+/** The county containing a point, or null. */
+export function countyAt([x, y]) {
+  const idx = scopeIndex();
+  if (!idx) return null;
+  for (const [code, g] of idx.county) {
+    if (x < g.b[0] || x > g.b[2] || y < g.b[1] || y > g.b[3]) continue;
+    if (g.rings.some((r) => inRing(x, y, r))) return code;
+  }
+  return null;
+}
+/** { kind: 'selection'|'view'|'state', level, units, center }. */
+/** Is any selected unit on screen? A selection only steers the charts while
+ *  the reader can see it: pan away from it and the map takes over again. */
+export function selectionInView() {
+  const m = S.map?.map, idx = scopeIndex();
+  if (!S.selection.size) return false;
+  if (!m || !idx) return true;
+  const bb = m.getBounds(), W = bb.getWest(), So = bb.getSouth(), E = bb.getEast(), N = bb.getNorth();
+  for (const u of S.selection) {
+    const g = idx[S.level]?.get(u);
+    if (g && g.b[0] <= E && g.b[2] >= W && g.b[1] <= N && g.b[3] >= So) return true;
+  }
+  return false;
+}
+export function viewScope(level = S.level) {
+  if (S.selection.size && level === S.level && selectionInView()) {
+    const idx = scopeIndex();
+    const pts = Array.from(S.selection).map((u) => idx?.[level]?.get(u)?.c).filter(Boolean);
+    const center = pts.length ? [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length] : null;
+    return { kind: 'selection', level, units: Array.from(S.selection), center };
+  }
+  const m = S.map?.map, idx = scopeIndex();
+  if (!m || !idx) return { kind: 'state', level, units: null, center: null };
+  const bb = m.getBounds(), W = bb.getWest(), So = bb.getSouth(), E = bb.getEast(), N = bb.getNorth();
+  const all = idx[level];
+  let units = [];
+  for (const [u, g] of all) if (g.c[0] >= W && g.c[0] <= E && g.c[1] >= So && g.c[1] <= N) units.push(u);
+  // Zoomed in past every centre: the places the view overlaps.
+  if (!units.length) for (const [u, g] of all) if (g.b[0] <= E && g.b[2] >= W && g.b[1] <= N && g.b[3] >= So) units.push(u);
+  const c = m.getCenter();
+  if (!units.length || units.length >= 0.9 * all.size) return { kind: 'state', level, units: null, center: null };
+  return { kind: 'view', level, units: units.sort((a, b) => a - b), center: [c.lng, c.lat] };
+}
+export const selectedUnits = () => viewScope().units;
 
 export const snapLabels = () => S.dim.snapshots.map((s) => s.date.slice(0, 7));
 export const ivLabels = () => S.dim.intervals.map((i) => S.dim.snapshots[i.a].date.slice(2, 7) + '→' + S.dim.snapshots[i.b].date.slice(2, 7));
@@ -152,7 +229,11 @@ export async function holdingsCube() {
   return S.cubes.holdings;
 }
 export const hAt = (c, m, u, s) => c.data[m]?.[u * c.nSnaps + s] ?? 0;
-export const holdingUnits = () => (S.selection.size && S.level === 'county' ? Array.from(S.selection) : [0]);
+// Holdings are counties: the selected counties, or the counties in view, or the state row (0).
+export const holdingUnits = () => {
+  const sc = viewScope('county');
+  return sc.units && sc.units.length ? sc.units : [0];
+};
 export const countyLabel = (u) => (u === 0 ? 'Montana' : (S.dim.counties.find((c) => c.code === u)?.name ?? String(u)));
 
 export async function topRows(units, s) {

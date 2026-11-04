@@ -61,7 +61,11 @@ export async function ask(conv, question, { onText, onTool, onStatus, signal, ma
     }
     if (!res.ok) {
       let message = `HTTP ${res.status}`, type = null;
-      try { const e = await res.json(); if (e?.error?.message) message = e.error.message; type = e?.error?.type || null; } catch { /* not JSON */ }
+      try {
+        const e = await res.json();
+        if (e?.error?.message) message = e.error.message + (e.error.detail ? ` (${e.error.detail})` : '');
+        type = e?.error?.type || null;
+      } catch { /* not JSON */ }
       rollback();
       turn.status = 'error';
       turn.error = message;

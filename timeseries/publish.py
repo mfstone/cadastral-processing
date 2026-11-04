@@ -70,7 +70,8 @@ TOPICS = {
 }
 FLOW_COLS = ["created", "retired", "persisted", "lot_created", "block_created",
              "unit_created", "first_mapping", "conf_high", "conf_medium",
-             "is_subdivision", "acres_created", "owner_changed",
+             "is_subdivision", "divided", "divided_plat", "divided_amended", "divided_cos",
+             "acres_created", "owner_changed",
              "transfers_out_of_state", "address_change_only", "to_CA", "from_CA",
              "comparable"]
 

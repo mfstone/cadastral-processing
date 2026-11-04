@@ -95,7 +95,9 @@ export function validateBody(body, { toolNames, names = 'never' }) {
         if (!b || typeof b !== 'object') return fail(`message ${i}: block must be an object`);
         const k = keysOf(b);
         if (b.type === 'text') {
-          if (k !== 'text,type' || !isStr(b.text, LIMITS.assistantTextChars)) return fail(`message ${i}: bad text block`);
+          // The API may add citations: null to a text block; it comes back verbatim.
+          if ((k !== 'text,type' && !(k === 'citations,text,type' && b.citations === null))
+            || !isStr(b.text, LIMITS.assistantTextChars)) return fail(`message ${i}: bad text block`);
           total += b.text.length;
         } else if (b.type === 'thinking') {
           if (k !== 'signature,thinking,type' || typeof b.thinking !== 'string' || typeof b.signature !== 'string') return fail(`message ${i}: bad thinking block`);
@@ -104,7 +106,11 @@ export function validateBody(body, { toolNames, names = 'never' }) {
           if (k !== 'data,type' || typeof b.data !== 'string') return fail(`message ${i}: bad redacted_thinking block`);
           total += b.data.length;
         } else if (b.type === 'tool_use') {
-          if (k !== 'id,input,name,type' || !TOOL_ID.test(b.id)) return fail(`message ${i}: bad tool_use block`);
+          // The live API adds caller: {type: 'direct'} to every tool_use block;
+          // the page sends it back verbatim, so it is accepted in that shape only.
+          const callerOk = k === 'caller,id,input,name,type' && b.caller && typeof b.caller === 'object'
+            && !Array.isArray(b.caller) && keysOf(b.caller) === 'type' && typeof b.caller.type === 'string' && b.caller.type.length <= 32;
+          if ((k !== 'id,input,name,type' && !callerOk) || !TOOL_ID.test(b.id)) return fail(`message ${i}: bad tool_use block`);
           if (!known.has(b.name)) return fail(`message ${i}: unknown tool "${b.name}"`);
           if (!b.input || typeof b.input !== 'object' || Array.isArray(b.input)) return fail(`message ${i}: tool input must be an object`);
           const len = JSON.stringify(b.input).length;

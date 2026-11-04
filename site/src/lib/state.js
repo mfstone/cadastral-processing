@@ -19,7 +19,7 @@
    bindHost() at boot, which keeps the import graph acyclic.
 --------------------------------------------------------------------------- */
 
-export const VIEW_KEYS = ['ladder', 'condition', 'ownership', 'fragmentation', 'churn', 'thresholds',
+export const VIEW_KEYS = ['ladder', 'growth', 'condition', 'ownership', 'fragmentation', 'churn', 'thresholds',
   'holdings', 'review', 'reports', 'about'];
 /** The paper's unit is the county, so these two views only ever show counties. */
 export const COUNTY_ONLY = new Set(['holdings', 'review']);
@@ -34,15 +34,15 @@ export const ERA_BOUNDS = { all: [0, 99], early: [0, 11], mid: [11, 20], late: [
 export const BASEMAPS = ['none', 'montana', 'positron'];
 export const THEMES = ['light', 'dark'];
 export const REPORT_KINDS = ['profile', 'condition', 'trends', 'holdings', 'worksheet', 'activity'];
-export const LAYER_KEYS = ['parcels', 'parcelFill', 'townships', 'counties', 'roads', 'buildings',
+export const LAYER_KEYS = ['parcels', 'townships', 'counties', 'roads', 'buildings',
   'reservations', 'publiclands', 'cities'];
-export const LAYER_DEFAULTS = Object.freeze({ parcels: true, parcelFill: true, townships: true, counties: true,
+export const LAYER_DEFAULTS = Object.freeze({ parcels: true, townships: true, counties: true,
   roads: true, buildings: true, reservations: false, publiclands: false, cities: false });
 /** Checkbox ids in index.astro, by layer key. */
-export const LAYER_IDS = { parcels: 'lyr-parcels', parcelFill: 'lyr-parcel-fill', townships: 'lyr-townships',
+export const LAYER_IDS = { parcels: 'lyr-parcels', townships: 'lyr-townships',
   counties: 'lyr-counties', roads: 'lyr-roads', buildings: 'lyr-buildings', reservations: 'lyr-reservations',
   publiclands: 'lyr-publiclands', cities: 'lyr-cities' };
-const LAYER_CODES = { parcels: 'par', parcelFill: 'fill', townships: 'twp', counties: 'cty', roads: 'rd',
+const LAYER_CODES = { parcels: 'par', townships: 'twp', counties: 'cty', roads: 'rd',
   buildings: 'bld', reservations: 'res', publiclands: 'pl', cities: 'city' };
 const OVERLAYS = { reservations: ['reservations.geojson', 'reservations'],
   publiclands: ['publiclands.geojson', 'public lands'], cities: ['cities.geojson', 'city limits'] };
@@ -55,7 +55,7 @@ export const VIEW_CONTROLS = {
   era: (v) => v === 'thresholds',
   origin: (v) => v === 'ownership',
   levelLocked: (v) => COUNTY_ONLY.has(v),
-  measureOff: (v) => v === 'condition',
+  measureOff: (v) => v === 'condition' || v === 'growth',
 };
 const CONDITION_TIME_TITLE = 'Building records exist at eight vintages (tax years 2014, 2015-2018, 2024-2026); '
   + 'the slider shows the nearest earlier one.';
@@ -413,6 +413,16 @@ const subscribers = new Set();
  *  registry's labels, and the legend refresh. */
 export function bindHost(h) { Object.assign(host, h); }
 
+/** The page's frame changed size (the assistant docked or undocked): tell the
+    map its new size and redraw the view, because the charts are drawn to the
+    width their container has at render time. No state changes. */
+export async function relayout() {
+  await nextFrame();
+  await nextFrame();   // the class change has been laid out by the second frame
+  if (S.map && S.map.map) S.map.map.resize();
+  if (host.render) await host.render();
+}
+
 export function subscribe(fn) {
   subscribers.add(fn);
   return () => subscribers.delete(fn);
@@ -447,7 +457,25 @@ export function syncSnapLabel(snap) {
 export function syncControls() {
   if (typeof document === 'undefined') return;
   const nav = doc('nav');
-  if (nav) for (const b of nav.children) b.setAttribute('aria-selected', String(b.dataset.view === S.view));
+  if (nav) {
+    let current = null;
+    for (const b of nav.children) {
+      const on = b.dataset.view === S.view;
+      b.setAttribute('aria-checked', String(on));
+      b.setAttribute('aria-selected', String(on));
+      if (on) current = b.querySelector('.vi-t')?.textContent || b.textContent;
+    }
+    // The menu button names the view on screen; About has its own button.
+    const cur = doc('views-current');
+    if (cur) cur.textContent = current || 'Choose';
+    const vb = doc('views-btn');
+    if (vb) vb.classList.toggle('hbtn-strong', !!current);
+    // Reports and About have their own buttons, pressed while showing.
+    for (const [id, v] of [['reports-btn', 'reports'], ['about-btn', 'about']]) {
+      const b = doc(id);
+      if (b) b.setAttribute('aria-pressed', String(S.view === v));
+    }
+  }
   show('erawrap', VIEW_CONTROLS.era(S.view));
   show('originwrap', VIEW_CONTROLS.origin(S.view));
   disable('level', VIEW_CONTROLS.levelLocked(S.view));
@@ -465,7 +493,6 @@ export function syncControls() {
   setValue('basemap', S.basemap);
   setChecked('mask', S.maskLow);
   for (const k of LAYER_KEYS) setChecked(LAYER_IDS[k], S.layers[k]);
-  disable('lyr-parcel-fill', !S.layers.parcels);
   const root = document.documentElement;
   if (S.theme) root.setAttribute('data-theme', S.theme); else root.removeAttribute('data-theme');
 }
@@ -489,7 +516,6 @@ async function syncLayers(prevLayers, warnings) {
     const on = S.layers[k];
     switch (k) {
       case 'parcels': m.setParcelsVisible(on); break;
-      case 'parcelFill': m.setParcelFill(on); break;
       case 'townships': setVis('township-line', on); break;
       case 'counties': setVis('county-line', on); break;
       case 'roads': case 'buildings': m.setReference(k, on); break;
@@ -572,7 +598,7 @@ async function apply(patch, { source = 'user', render = true, hash = true, force
     await nextFrame();
     m.map.resize();
   }
-  if (changed.has('layers') && (prev.layers.parcels !== S.layers.parcels || prev.layers.parcelFill !== S.layers.parcelFill)) {
+  if (changed.has('layers') && prev.layers.parcels !== S.layers.parcels) {
     if (host.refreshLegend) host.refreshLegend();
   }
   const needsRender = force || [...changed].some((k) => RENDER_KEYS.has(k));

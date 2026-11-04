@@ -1,5 +1,12 @@
 # Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
 ANTHROPIC_API_KEY=sk-ant-...
+# Only if the key is an organisation default key (not scoped to a workspace):
+# the API then insists on the workspace it bills to. Console > Settings >
+# Workspaces > the workspace > its ID (wrkspc_...). A workspace-scoped key
+# needs nothing here.
+ANTHROPIC_WORKSPACE_ID=
+# 1 puts the upstream error text in error responses. Local only.
+ASSISTANT_DEBUG=
 # Any long random string; salts the daily IP hashes in logs and the budget.
 ASSISTANT_SALT=change-me
 # Only with a Turnstile site key in wrangler.jsonc vars.

@@ -107,6 +107,7 @@ choices and the Table 1 regression baseline are in `docs/holdings_definitions.md
 | 10 | `timeseries/holdings.py` | `data/facts/holdings_{county,state,top,review}`: 640+ acre holdings, CLO4, top-N, Lorenz/Gini |
 | -- | `timeseries/regress.py` | `data/facts/regression_table1.csv`: residuals against the paper's Table 1 |
 | 11 | `timeseries/cama.py` | `data/cama/parcels_cama_<date>` (one per series point), `cama_{county,township,timing,condition_decade,transitions}`, `qa_cama.json`: the DOR's building records (ORION `Res`/`Com`/`Oby`/`Permit`/`FinalVal`/`InspHistory`) joined on the geocode at eight tax years as a witness to the ladder, and the dwelling condition and year built as a measure |
+| 3b | `timeseries/subdivisions.py` | `data/events/subdiv_<i>_<a>_<b>`, `qa_subdivisions.json`: new lots divided off by a new plat, an amended plat or a certificate of survey, found by comparing the same land between exports (a parcel gone or smaller in the quarter-section, and an instrument in the new lot's legal description its parent land did not name); feeds the `divided*` flows and the tiles' `sdx` / `sdh` for the Subdivision growth view. Run after `events`, before `aggregate` and `tiles` |
 | 12 | `timeseries/structures.py` | `data/structures/points_<date>`, `parcels_structures_<date>`, `qa_structures.json`: the State Library's Structures Framework address points (NENA v2, monthly) joined to the newest export's parcels twice, by containment and by the geocode each point records, as a witness to the address rung, the DOR's dwellings and the geocode itself |
 
 ```bash
@@ -117,7 +118,9 @@ choices and the Table 1 regression baseline are in `docs/holdings_definitions.md
 .venv/bin/python -m timeseries.regress
 .venv/bin/python -m timeseries.cama             # needs orion_cache/res.parquet etc.; see ORION integration
 .venv/bin/python -m timeseries.structures       # stage 12: address points as a witness; run before cama so the series carries it
-.venv/bin/python -m timeseries.tiles            # re-bake the parcel tiles so they carry `cd` / `yb`
+.venv/bin/python -m timeseries.subdivisions     # after events: lots divided off by plat / amended plat / survey (then aggregate)
+.venv/bin/python -m timeseries.aggregate
+.venv/bin/python -m timeseries.tiles            # re-bake the parcel tiles so they carry `cd` / `yb` / `sdx` / `sdh`
 .venv/bin/python -m timeseries.publish && (cd site && npm run build)
 .venv/bin/python -m basemap.build --install-site site/public   # the in-house basemap (basemap/dist) and its copy under site/public/basemap
 ```
@@ -129,29 +132,54 @@ view as a range between the document tier and the maximal tier.
 
 ## Dashboard (`site/`)
 
-A static Astro site over the published tables (`timeseries/publish.py` writes
-`site/public/data/`; the parcel tiles come from `timeseries/tiles.py`). One
-shared map, one time slider over the 29 vintages, and ten tabs:
+The **Montana Cadastral Analytics Engine**: a static Astro site over the
+published tables (`timeseries/publish.py` writes `site/public/data/`; the parcel
+tiles come from `timeseries/tiles.py`). One shared map and one time slider over
+the 29 vintages. A **View** menu holds nine analytical views, each with a
+one-line description; **Reports**, **About** and **Tutorial** are their own
+header buttons, beside the theme toggle and **Ask**. Reports and About toggle:
+pressing either again returns to the view the reader came from.
 
-| tab | what it answers |
+| view | what it answers |
 |---|---|
-| Development | the platted / addressed / built ladder, absorption by cohort, dormant inventory; at parcel depth the parcels that did not yet exist at the vintage shown are outlined by the period they first appeared (2003-05 to 2021 on) |
-| Condition | the DOR's dwelling condition and year built at eight tax years (2014, 2015-2018, 2024-2026), drawn together as a bivariate grid (condition across, age up; thirds of the units shown, fixed classes on the parcels), the same dwellings re-rated point to point, and the building records as a witness to the ladder |
+| Development | the platted / addressed / built ladder, absorption by cohort, dormant inventory |
+| Subdivision growth | lots divided off by a new plat, an amended plat or a certificate of survey, export by export, with a player (play, pause, step, speed); at parcel depth each lot divided off by the slider date is filled in one of seven highlighter colours over equal-interval year classes |
+| Condition | the DOR's dwelling condition and year built at eight tax years (2014, 2015-2018, 2024-2026), drawn together as a bivariate grid (condition across, age up; thirds of the units shown, fixed classes on the parcels), the same dwellings re-rated point to point, and the building records as a witness to the ladder; residential dwellings only, so a commercial building shows no condition |
 | Ownership | tenure, owner distance, out-of-state share, the reservation checkerboard |
 | Fragmentation | acreage by parcel size, agricultural-use acreage |
 | Churn | owner change among persisting parcels, address-only edits, condominiumisation |
 | Thresholds | new-lot sizes against the 20-, 40- and 160-acre lines |
 | Holdings | 640+ acre holdings, CLO4, Lorenz and Gini, the paper's Table 1 |
 | Review | the decisions the holdings method leaves to a reviewer |
-| Reports | six printable documents: county profile, housing condition profile, statewide trends brief, large-holdings update, review worksheet (CSV), subdivision activity for a period |
-| About | sources, definitions, caveats |
+| Reports (button) | six printable documents: county profile, housing condition profile, statewide trends brief, large-holdings update, review worksheet (CSV), subdivision activity for a period |
+| About (button) | sources, definitions, caveats, how to use it |
+
+Parcel colours are each parcel's newest record and do not follow the slider,
+except in Subdivision growth.
+
+**The charts follow the map** (`site/src/lib/access.js` `viewScope`,
+`site/src/lib/compare.js`). Zoomed in, every view's figures and charts cover
+the townships (or counties) whose centres are in view; zoomed out to 90% or more
+of them, Montana. Each view also gets a *compared* chart of its headline rate or
+share for the places in view, the county at the centre of the view and the
+state, from the same formulas and count floors as the assistant
+(`site/src/assistant/derived.mjs`). A click selection takes over only while one
+of its units is on screen; pan away and the charts follow the map again, and
+the first card says which applies. The panel redraws only when the set of
+places changes, and a redraw writes only the map colours that changed.
+
+**Tutorial** (`site/src/lib/tour.js`): a 29-step tour opens on a first visit
+(not on a shared link), can be left at any step, and is then a header button.
+**Phones**: one application at every width; below 700 px the map fills the
+screen, the charts sit in a bottom sheet with a drag handle, and the legend,
+layer list and filter row fold behind buttons.
 
 ```bash
 cd site && npm install
 npm run data            # = python -m timeseries.publish
 npm run tiles           # = python -m timeseries.tiles (about 25 minutes)
 npm run build && npm run preview
-SMOKE_URL=http://127.0.0.1:4321 npm run test:smoke     # 137 checks
+SMOKE_URL=http://127.0.0.1:4321 npm run test:smoke     # 156 checks
 npm run test:unit       # the state, the query grammar, the resolver, the tool schemas (node --test)
 npm run reports:pdf     # composes every report through the print path (needs a preview on SMOKE_URL)
 ```
@@ -171,17 +199,17 @@ owner's name. The page runs the agent loop and the six tools (`tools.js`,
 (`worker/assistant.mjs`) is the pinned streaming proxy between the page and the
 Anthropic Messages API: it holds the key, the model, the generated system prompt
 and the tool list, validates that the page sent nothing but the conversation,
-rate-limits, caps the day's spend and relays the stream. The site still deploys
+rate-limits, enforces the spending and usage caps and relays the stream. The site still deploys
 and runs with no Worker at all: the button appears only where
 `/api/assistant/health` answers.
 
 ```bash
 npm install                                  # at the repo root: wrangler and the SDK
-cp .dev.vars.example .dev.vars               # then put a real ANTHROPIC_API_KEY in it
+cp .dev.vars.example .dev.vars               # a real ANTHROPIC_API_KEY; plus ANTHROPIC_WORKSPACE_ID if the key is not workspace-scoped
 npm run build                                # site: regenerates src/assistant/prompt.json, then astro build
 npx wrangler dev                             # http://127.0.0.1:8787 serves site/dist + /api/assistant
 npm test                                     # unit tests for the page and the Worker
-npx wrangler secret put ANTHROPIC_API_KEY    # first deploy; also ASSISTANT_SALT, and TURNSTILE_SECRET if used
+npx wrangler secret put ANTHROPIC_API_KEY    # first deploy; also ASSISTANT_SALT, ANTHROPIC_WORKSPACE_ID and TURNSTILE_SECRET as needed
 npm run deploy                               # build, then wrangler deploy
 EVAL_URL=https://... node site/scripts/assistant-eval.mjs   # the 15 golden questions, live (costs money)
 ```
@@ -191,10 +219,52 @@ The system prompt is generated (`site/scripts/build-prompt.mjs`) from the rules
 the published caveats and dimensions, and a hand-written data dictionary
 (`site/src/assistant/dictionary.md`) that the build checks against the Parquet
 schemas. The knobs are `vars` in `wrangler.jsonc`: `ASSISTANT_MODEL`,
-`ASSISTANT_EFFORT`, the daily caps, `TURNSTILE_SITE_KEY` (the bot check is off until
-a key is set), and `ASSISTANT_ENABLED`. The in-house basemap archive is excluded
+`ASSISTANT_EFFORT`, the caps, `TURNSTILE_SITE_KEY` (the bot check is off until
+a key is set), and `ASSISTANT_ENABLED`.
+
+**Spending and usage caps** (`worker/budget.mjs`, a Durable Object). Every answer's
+token usage is priced at the `ASSISTANT_PRICE_*` vars and added to the month's
+total. At `ASSISTANT_MONTHLY_BUDGET_USD` new questions stop and the panel says the
+allowance is used up until the 1st; a question already under way may finish, up to
+`ASSISTANT_MONTHLY_OVERRUN_USD`. Each visitor (a salted hash of the IP; there are
+no accounts) gets `ASSISTANT_IP_DAILY_QUESTIONS` and `ASSISTANT_IP_MONTHLY_QUESTIONS`.
+The Worker's figure is an estimate; set the Anthropic Console spend limit for the
+workspace slightly above cap plus overrun as the hard stop. If that limit is hit
+first, the panel shows the same notice. IP caps can be shared by an office or
+evaded by changing networks; Turnstile is the guard against scripted abuse. The in-house basemap archive is excluded
 from the asset upload (`site/public/.assetsignore`): it exceeds the 25 MiB per-asset
-cap and needs HTTP Range, so in production it is served from R2.
+cap and needs HTTP Range, so in production it is served from R2 (see Hosting).
+
+### Hosting (Cloudflare Pages in front of the Worker)
+
+The custom domain is a subdomain of `epistemegeospatial.com`, whose DNS is not
+on Cloudflare. A Worker takes a custom domain only inside a Cloudflare zone; a
+Pages project takes one by a plain CNAME at any DNS host. So:
+
+- **Pages project `cadastral-analytics`** (`pages/`) serves the static site with
+  `_headers`, and carries the domain. Its only code, `pages/_worker.js`, forwards
+  the two routes in `pages/_routes.json` (`/api/*` and the basemap archive) to
+  the Worker over a service binding, unchanged, so the Worker sees the page's
+  own origin.
+- **Worker `mt-cadastral-change`** (repo-root `wrangler.jsonc`) keeps the
+  assistant, its Durable Object, the rate limit and the secrets, and serves the
+  basemap archive from the R2 bucket `mt-cadastral-basemap` with HTTP Range
+  (`worker/basemap.mjs`). It also serves the whole site on its `workers.dev`
+  URL, and locally under `wrangler dev`.
+
+```bash
+npm run build                      # the site
+npx wrangler r2 bucket create mt-cadastral-basemap    # once
+npm run deploy:basemap             # upload the 124 MiB archive to R2 (again only when the basemap is rebuilt)
+npx wrangler deploy                # the Worker (secrets first: see above)
+npm run deploy:pages               # stage .deploy/pages (pages/stage.mjs), then wrangler pages deploy
+```
+
+The domain is added to the Pages project (Custom domains), then a CNAME
+`cadastral-analytics` -> `cadastral-analytics.pages.dev` is set at the DNS host.
+Locally, `npm run dev:seed-basemap` puts the archive into the simulated bucket
+once; `npx wrangler dev` then serves everything. `wrangler dev` cannot watch
+`site/dist` (too many files for the inotify limit), so restart it after a build.
 
 ## Module map
 
@@ -219,6 +289,9 @@ cap and needs HTTP Range, so in production it is served from R2.
 | `timeseries/reference.py` | MDT road centerlines + building footprints (Microsoft's 2018 statewide set merged with the State Library's lidar footprints, each tagged by source, with a coverage test against the DOR's dwellings) staged into the parcel tiles; statewide highways and city names for the low zooms (labels from vendored Noto Sans glyphs under `site/public/fonts`) |
 | `timeseries/structures.py` | stage 12: the Structures Framework's address points as a witness (address rung, dwellings, geocode, units, manufactured homes, placement) |
 | `basemap/build.py`, `basemap/styles.py`, `basemap/pmtiles_writer.py` | the in-house Montana basemap: State Library frameworks staged to twelve layers, tiled by GDAL to z13, packaged as PMTiles with light and dark MapLibre styles; `check_pmtiles.mjs` reads the archive back with the official client |
+| `site/src/lib/state.js`, `site/src/lib/access.js` | the one state object, `applyState()`, the URL hash; the data accessors and the map-following scope |
+| `site/src/lib/compare.js` | a view's rate or share as a series for any set of places, for the *compared* charts |
+| `site/src/lib/tour.js`, `site/src/lib/about.js` | the first-visit tutorial; the About text (also fed into the assistant's prompt) |
 | `site/src/lib/reports.js` | the six printable reports (county profile, housing condition profile, statewide brief, large-holdings update, review worksheet CSV, subdivision activity), composed in the page from the published tables and printed to PDF by the browser |
 
 ## In-house basemap (`basemap/`)

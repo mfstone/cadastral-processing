@@ -40,7 +40,7 @@ const TOPIC_DEFAULTS = {
   owner_state: ['parcels', 'acres', 'private_parcels'],
 };
 const UNKNOWN_FIELD = { dev: 'development_ladder', improve: 'development_ladder', ag: 'agricultural_acreage' };
-const LAYER_MAP = { parcels: 'parcels', parcel_fill: 'parcelFill', townships: 'townships', counties: 'counties',
+const LAYER_MAP = { parcels: 'parcels', townships: 'townships', counties: 'counties',
   roads: 'roads', buildings: 'buildings', reservations: 'reservations', public_lands: 'publiclands', city_limits: 'cities' };
 
 const fail = (m) => { throw new Error(m); };

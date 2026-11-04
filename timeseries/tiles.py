@@ -97,7 +97,7 @@ FILE_CAP = 20_000     # Cloudflare Pages deployment limit
 # fallbacks are the *least* interesting value in each case, so a join miss can
 # never invent a finding: undeveloped, unknown vintage, private, most-distant
 # owner locality.
-DEFAULTS = (("dev", 0), ("born", -1), ("ac", 0.0), ("ten", 2), ("loc", 4),
+DEFAULTS = (("dev", 0), ("born", -1), ("sdx", -1), ("sdh", 0), ("ac", 0.0), ("ten", 2), ("loc", 4),
             ("res", 0), ("cnd", 0), ("hs", -1), ("hr", 0), ("hp", 0),
             ("cd", -1), ("yb", 0))
 
@@ -203,6 +203,24 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
     else:
         log.warning("no CAMA frame for %s; condition and year built default", date)
 
+    # Was the parcel divided off by a plat, an amended plat or a survey, and
+    # when? Only its current occurrence's creation counts: the interval that
+    # ends at its first export (first_idx - 1).
+    from timeseries import subdivisions
+    flags = subdivisions.load_flags(EVENT_DIR)
+    code = {"plat": 1, "amended": 2, "cos": 3}
+    sdx = pd.Series(-1, index=p.index, dtype="int16")
+    sdh = pd.Series(0, index=p.index, dtype="int8")
+    for i, f in flags.items():
+        if not len(f):
+            continue
+        how = f.drop_duplicates("parcel_id").set_index("parcel_id")["how"]
+        here = (p["first_idx"] == i + 1) & p["parcel_id"].isin(how.index)
+        sdx[here] = i + 1
+        sdh[here] = p.loc[here, "parcel_id"].map(how).map(code).fillna(0).astype("int8")
+    log.info("divided lots: %s parcels divided off (plat %s, amended %s, survey %s)", f"{int((sdx >= 0).sum()):,}",
+             f"{int((sdh == 1).sum()):,}", f"{int((sdh == 2).sum()):,}", f"{int((sdh == 3).sum()):,}")
+
     attrs = pd.DataFrame({
         "parcel_id": p["parcel_id"],
         "hs": hs,                                              # holding size class, -1 not private
@@ -210,6 +228,8 @@ def build_source(date: str, path: str) -> gpd.GeoDataFrame:
         "hp": hp,                                              # 1 = holding awaits a review decision
         "dev": dev,                                            # 0 platted 1 addressed 2 built
         "born": p["first_idx"].fillna(-1).astype("int16"),      # snapshot index first seen
+        "sdx": sdx,                                             # export index at which the lot was divided off, -1 never
+        "sdh": sdh,                                             # by 1 a plat, 2 an amended plat, 3 a certificate of survey
         "ac": p["acres"].fillna(0).round(1).astype("float32"),
         "ten": ten.astype("int8"),                              # 0 public 1 tribal 2 private
         "loc": loc.astype("int8"),                              # absentee gradient 0-4

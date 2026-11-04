@@ -25,7 +25,8 @@ basemap/work/
 basemap/dist/
 site/public/basemap/
 
-# the Worker
+# the Worker and the staged Pages upload
+.deploy/
 /node_modules/
 .wrangler/
 .dev.vars

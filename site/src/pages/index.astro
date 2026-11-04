@@ -1,4 +1,5 @@
 ---
+import '@fontsource-variable/source-serif-4';
 import '../styles/viz.css';
 ---
 <!doctype html>
@@ -6,7 +7,7 @@ import '../styles/viz.css';
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Montana cadastral change, 2003–2026</title>
+  <title>Montana Cadastral Analytics Engine</title>
   <meta name="description" content="Where parcels are being created, who owns Montana, and what has actually been built — over 29 statewide cadastral vintages." />
   <link rel="icon" href="/favicon.svg" />
 </head>
@@ -15,16 +16,29 @@ import '../styles/viz.css';
 
   <div id="app" hidden>
     <header>
-      <h1>Montana cadastral change</h1>
+      <h1>Montana Cadastral Analytics Engine</h1>
       <span class="sub" id="sub"></span>
-      <nav id="nav" role="tablist" aria-label="Views"></nav>
-      <button id="theme" title="Toggle light / dark" aria-label="Toggle light or dark theme"
-              style="font:inherit;font-size:12px;padding:4px 9px;border:1px solid var(--axis);
-                     border-radius:6px;background:var(--surface-1);color:var(--ink-2);cursor:pointer">
-        ◐
-      </button>
-      <button id="assist-toggle" hidden aria-expanded="false" aria-controls="assist"
-              title="Ask a question; the assistant sets the dashboard and answers from its tables">Ask</button>
+      <div id="hdr-actions">
+        <!-- The views, as one menu: each with a line on what it shows. -->
+        <div id="viewmenu">
+          <button id="views-btn" class="hbtn hbtn-strong" type="button" aria-haspopup="menu" aria-expanded="false"
+                  aria-controls="nav"><span class="vm-k">View</span> <span id="views-current">Development</span>
+            <span class="vm-caret" aria-hidden="true">▾</span></button>
+          <nav id="nav" role="menu" aria-label="Views" hidden></nav>
+        </div>
+        <button id="reports-btn" class="hbtn" type="button" data-view="reports" aria-pressed="false"
+                title="Six printable reports built from the same tables">Reports</button>
+        <button id="about-btn" class="hbtn" type="button" data-view="about" aria-pressed="false">About</button>
+        <span id="tourwrap">
+          <button id="tour-btn" class="hbtn" type="button" hidden aria-expanded="false"
+                  title="A guided tour of the application">Tutorial</button>
+          <span id="tour-hint" role="status" hidden>New here? Take the two-minute tutorial.
+            <button id="tour-hint-x" type="button" aria-label="Dismiss">&times;</button></span>
+        </span>
+        <button id="theme" class="hbtn" type="button" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
+        <button id="assist-toggle" class="hbtn" hidden aria-expanded="false" aria-controls="assist"
+                title="Ask a question; the assistant sets the dashboard and answers from its tables">Ask</button>
+      </div>
     </header>
 
     <!-- Filters in one row above the content. -->
@@ -36,6 +50,8 @@ import '../styles/viz.css';
         <span id="snapwarn" hidden aria-label="This vintage has a field that cannot be reported"
               style="color:var(--statute);font-weight:700;cursor:help">&#9888;</span>
       </div>
+      <!-- On a phone the controls below the slider fold behind this. -->
+      <button id="filters-more" type="button" aria-expanded="false" aria-controls="filters">Filters</button>
       <label for="level">Unit
         <select id="level">
           <option value="township" selected>PLSS township</option>
@@ -80,11 +96,13 @@ import '../styles/viz.css';
       <div id="mapwrap">
         <div id="map" role="region" aria-label="Map of Montana"></div>
         <p id="map-desc" class="sr-only" aria-live="polite"></p>
-        <div id="legend"></div>
+        <!-- The body is rewritten with every view; the toggle stays. On a phone
+             the explanatory notes are hidden until More is pressed. -->
+        <div id="legend"><div id="legend-body"></div>
+          <button id="legend-more" type="button" aria-expanded="false" aria-controls="legend-body">More</button></div>
         <details id="layers" open>
           <summary>Layers</summary>
           <label><input type="checkbox" id="lyr-parcels" checked /> Parcels <span class="hint">(above z10)</span></label>
-          <label class="sub"><input type="checkbox" id="lyr-parcel-fill" checked /> Fill by view <span class="hint">(off leaves the outlines)</span></label>
           <label><input type="checkbox" id="lyr-townships" checked /> Township grid</label>
           <label><input type="checkbox" id="lyr-counties" checked /> County boundaries</label>
           <label><input type="checkbox" id="lyr-roads" checked /> Roads <span class="hint">(MDT, with names)</span></label>
@@ -97,6 +115,9 @@ import '../styles/viz.css';
         </details>
         <div id="parcelinfo" hidden></div>
       </div>
+      <!-- On a phone the panel is a sheet over the map: drag or tap this to raise it. -->
+      <button id="sheet-grip" type="button" aria-controls="panel"
+              aria-label="Charts panel: drag up or press to show more, down to show the map"><span></span></button>
       <div id="panel"></div>
     </main>
 
@@ -110,6 +131,7 @@ import '../styles/viz.css';
       </div>
       <div id="assist-log" role="log" aria-live="polite" aria-relevant="additions"></div>
       <div id="assist-suggest" aria-label="Suggested questions"></div>
+      <p id="assist-notice" role="status" tabindex="-1" hidden></p>
       <form id="assist-form">
         <textarea id="assist-q" rows="2" placeholder="Ask about Montana’s parcels, owners and housing…"
                   aria-label="Your question"></textarea>

@@ -7,7 +7,7 @@
    assistant did to the dashboard ("What I did") and a way back ("Restore my
    view"). The model's text is rendered as DOM, never as HTML.
 --------------------------------------------------------------------------- */
-import { applyState, toHash, getState, S } from '../lib/state.js';
+import { applyState, toHash, getState, relayout, S } from '../lib/state.js';
 import { Conversation, ask } from './loop.js';
 import { renderText } from './render-text.js';
 
@@ -58,6 +58,21 @@ async function turnstileToken() {
 }
 let health = null;
 let controller = null;
+let locked = false;
+
+/* A usage limit was reached (the month's allowance, the day's, or this
+   visitor's): say so where the question box was and stop taking questions.
+   The conversation so far stays readable and the dashboard keeps working. */
+function showLimit(message) {
+  locked = true;
+  const n = $('assist-notice');
+  n.textContent = message;
+  n.hidden = false;
+  $('assist-q').disabled = true;
+  $('assist-q').placeholder = 'The assistant is not taking questions right now.';
+  $('assist-send').disabled = true;
+  $('assist-suggest').hidden = true;
+}
 let built = false;
 let busy = false;
 
@@ -75,7 +90,10 @@ export function toggle(h) {
   const open = a.hidden;
   a.hidden = !open;
   $('assist-toggle').setAttribute('aria-expanded', String(open));
+  // The panel takes its own share of the screen and the dashboard reflows
+  // into the rest (beside it on a wide screen, above it on a narrow one).
   document.body.classList.toggle('assist-open', open);
+  relayout();
   if (open) $('assist-q').focus(); else $('assist-toggle').focus();
 }
 
@@ -89,6 +107,7 @@ function build() {
     sug.appendChild(b);
   }
   $('assist-privacy').textContent = PRIVACY;
+  if (health?.exhausted) showLimit(health.notice || 'The assistant has used its allowance for this month.');
   $('assist-form').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
   $('assist-q').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
@@ -113,7 +132,7 @@ function build() {
 
 async function submit(text) {
   const q = (text ?? $('assist-q').value).trim();
-  if (!q || busy) return null;
+  if (!q || busy || locked) return null;
   busy = true;
   $('assist-q').value = '';
   $('assist-suggest').hidden = true;
@@ -180,8 +199,14 @@ async function submit(text) {
   window.__assistant.lastRun = turn;
   busy = false;
   controller = null;
-  $('assist-send').disabled = false;
   $('assist-stop').hidden = true;
+  if (turn.status === 'error' && (turn.errorType === 'budget' || turn.errorType === 'limit')) {
+    box.remove();   // the question was not answered; the notice says why
+    showLimit(turn.error);
+    $('assist-notice').focus?.();
+    return turn;
+  }
+  $('assist-send').disabled = false;
   $('assist-q').focus();
   return turn;
 }

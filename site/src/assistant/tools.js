@@ -8,26 +8,33 @@
    deterministic, because the tool list is the first thing in the cached
    prompt prefix and a reordered list is a cache miss on every request.
 
-   Every schema is strict: additionalProperties false, every property
-   required, optional ones nullable. Range checks (an index past the last
+   Every schema is closed: additionalProperties false, every property
+   required, optional ones nullable. Five tools are strict. configure_dashboard
+   is not: the API caps strict tools at 16 union-typed parameters in a
+   request, and that tool alone has more. Its input goes through the state
+   normaliser, which checks every enum and type and reports what it dropped. Range checks (an index past the last
    snapshot, a county that does not exist) are done by the executors, which
    can say what the right value would have been.
 --------------------------------------------------------------------------- */
 
-const VIEWS = ['ladder', 'condition', 'ownership', 'fragmentation', 'churn', 'thresholds', 'holdings', 'review', 'reports', 'about'];
+const VIEWS = ['ladder', 'growth', 'condition', 'ownership', 'fragmentation', 'churn', 'thresholds', 'holdings', 'review', 'reports', 'about'];
 const nullable = (type) => (Array.isArray(type) ? [...type, 'null'] : [type, 'null']);
-const str = (description) => ({ type: ['string', 'null'], description });
-const bool = (description) => ({ type: ['boolean', 'null'], description });
-const int = (description) => ({ type: ['integer', 'null'], description });
-const strEnum = (values, description) => ({ type: ['string', 'null'], enum: [...values, null], description });
+// A description is a string or absent; the API rejects null. A nullable enum
+// is written as an explicit null branch: the API's validator rejects an enum
+// under a type list such as ['string', 'null'].
+const desc = (description) => (description ? { description } : {});
+const str = (description) => ({ type: ['string', 'null'], ...desc(description) });
+const bool = (description) => ({ type: ['boolean', 'null'], ...desc(description) });
+const int = (description) => ({ type: ['integer', 'null'], ...desc(description) });
+const strEnum = (values, description) => ({ anyOf: [{ type: 'string', enum: [...values] }, { type: 'null' }], ...desc(description) });
 const obj = (properties, description) => ({
-  type: ['object', 'null'], description, properties, required: Object.keys(properties), additionalProperties: false,
+  type: ['object', 'null'], ...desc(description), properties, required: Object.keys(properties), additionalProperties: false,
 });
-const intList = (description) => ({ type: ['array', 'null'], items: { type: 'integer' }, description });
+const intList = (description) => ({ type: ['array', 'null'], items: { type: 'integer' }, ...desc(description) });
 
 export const DERIVED_MEASURES = [
   'addressed_unbuilt_share', 'out_of_state_share', 'under_40ac_acreage_share', 'owner_change_pct_per_year',
-  'new_lots_per_1000_per_year', 'transfers_out_of_state_per_year', 'address_changes_per_year', 'units_created_per_year',
+  'new_lots_per_1000_per_year', 'lots_divided_per_1000_per_year', 'transfers_out_of_state_per_year', 'address_changes_per_year', 'units_created_per_year',
   'clo4_pct', 'mean_large_holding_acres', 'large_acres_share_of_private', 'large_oos_share', 'large_provisional_share',
   'fair_or_worse_share', 'pre_1980_share',
 ];
@@ -57,7 +64,7 @@ export const TOOLS = [
       + 'Holdings and Review are county-level views (the level is forced). Snapshot 10 (2009-07-05) has no '
       + 'development ladder or agricultural acreage. The result is the resulting state plus warnings about anything '
       + 'that was coerced or could not be applied.',
-    strict: true,
+    strict: false,
     input_schema: {
       type: 'object',
       properties: {
@@ -78,7 +85,7 @@ export const TOOLS = [
         mask_low_coverage: bool('Grey out units whose record is not yet complete in the vintage (default true).'),
         basemap: strEnum(['none', 'montana', 'positron'], 'Outlines only, the in-house Montana basemap, or OpenStreetMap.'),
         layers: obj({
-          parcels: bool(null), parcel_fill: bool(null), townships: bool(null), counties: bool(null), roads: bool(null),
+          parcels: bool(null), townships: bool(null), counties: bool(null), roads: bool(null),
           buildings: bool(null), reservations: bool(null), public_lands: bool(null), city_limits: bool(null),
         }, 'Reference layers on or off. Parcels draw only past zoom 10.'),
         map: obj({

@@ -25,7 +25,7 @@ export function ndjsonFor(blocks, { stopReason } = {}) {
         push({ type: 'content_block_delta', index: i, delta: { type: 'text_delta', text: piece } });
       }
     } else {
-      push({ type: 'content_block_start', index: i, content_block: { type: 'tool_use', id: b.id || id(), name: b.tool, input: {} } });
+      push({ type: 'content_block_start', index: i, content_block: { type: 'tool_use', id: b.id || id(), name: b.tool, input: {}, caller: { type: 'direct' } } });
       const json = JSON.stringify(b.input || {});
       for (const piece of json.match(/.{1,40}/gs) || ['']) {
         push({ type: 'content_block_delta', index: i, delta: { type: 'input_json_delta', partial_json: piece } });
