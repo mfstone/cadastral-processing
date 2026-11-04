@@ -146,7 +146,7 @@ export class UnitMap {
       attributionControl: false, maxZoom: 15, minZoom: 4,
       dragRotate: false, pitchWithRotate: false,
     });
-    this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
     this.map.addControl(new maplibregl.AttributionControl({
       compact: true,
       customAttribution: 'Parcels & PLSS: Montana State Library / DOR',

@@ -278,11 +278,10 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
 #layers label.sub input:disabled + * { opacity: 0.5; }
 #layers .hint { color: var(--ink-muted); font-size: 10.5px; }
 #lyr-status { margin-top: 5px; }
-/* Keep clear of the zoom buttons. */
-.maplibregl-ctrl-top-right { margin-top: 0; margin-right: 168px; }
 
 #parcelinfo {
-  position: absolute; left: 10px; top: 10px; z-index: 3; max-width: 290px;
+  /* Right of the zoom buttons (top-left control, 29px + 10px margins). */
+  position: absolute; left: 49px; top: 10px; z-index: 3; max-width: 290px;
   background: var(--surface-1); border: 1px solid var(--axis); border-radius: 7px;
   padding: 8px 10px; font-size: 11.5px; box-shadow: 0 3px 14px rgba(0,0,0,.14);
 }
@@ -311,8 +310,7 @@ main { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); min
   #snaplabel { min-width: 0; }
   #legend { max-width: 56vw; font-size: 10.5px; padding: 6px 8px; }
   #layers { font-size: 11px; min-width: 0; max-width: 42vw; }
-  #parcelinfo { max-width: 70vw; }
-  .maplibregl-ctrl-top-right { margin-right: 0; margin-top: 46px; }
+  #parcelinfo { max-width: calc(100vw - 69px); }
   #panel { padding: 10px 10px 24px; gap: 12px; }
   .stats { gap: 12px; }
 }
