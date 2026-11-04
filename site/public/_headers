@@ -39,6 +39,7 @@
 # care which type a tile is served as. The smoke suite checks the deployed
 # origin's content-encoding on a tile.
 /data/parcels/*
+  ! Cache-Control
   Content-Type: application/x-protobuf
   Cache-Control: public, max-age=86400
 

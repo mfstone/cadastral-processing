@@ -669,3 +669,22 @@ body.assist-open #app { margin-right: var(--assist-w); }
    `font: inherit` (which brings back the body's sans), and one button has an
    inline style. Every button, everywhere, wears the serif. */
 button { font-family: var(--serif) !important; }
+
+/* The opening notice (disclaimer.js): the terms of use, over everything. */
+#terms { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 16px;
+  background: rgba(10, 14, 12, .62); overflow-y: auto; }
+#terms .terms-card { width: min(640px, 100%); box-sizing: border-box; max-height: calc(100dvh - 32px); overflow-y: auto;
+  background: var(--surface-1); color: var(--ink-1); border: 1px solid var(--axis); border-radius: 10px;
+  padding: 20px 22px 16px; box-shadow: 0 14px 40px rgba(0,0,0,.3); font-size: 13.5px; line-height: 1.55; }
+#terms .terms-eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); }
+#terms h2 { margin: 4px 0 10px; font-family: var(--serif); font-size: 19px; text-transform: none; letter-spacing: 0; color: var(--ink-1); }
+#terms .terms-body p { margin: 0 0 10px; color: var(--ink-2); }
+#terms .terms-body strong { color: var(--ink-1); }
+#terms a { color: var(--ui); }
+#terms .terms-actions { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+#terms .terms-note { flex: 1; font-size: 12px; color: var(--ink-muted); }
+#terms .terms-actions button { font-size: 14px; padding: 8px 18px; min-height: 40px; border-radius: 6px;
+  border: 1px solid var(--ui); background: var(--ui); color: var(--ui-ink); cursor: pointer; }
+@media (max-width: 700px) { #terms .terms-card { padding: 16px; font-size: 13px; }
+  #terms .terms-actions { flex-direction: column-reverse; align-items: stretch; } }
+@media print { #terms { display: none !important; } }

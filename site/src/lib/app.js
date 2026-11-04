@@ -2297,6 +2297,9 @@ export async function boot() {
   // The assistant's button is probed first so the tour can include it; the
   // tour starts by itself on a first visit and is a header button after.
   await enableAssistant();
+  // The terms of use come first on a first visit; the tutorial waits for them.
+  const { showDisclaimer } = await import('./disclaimer.js');
+  await showDisclaimer();
   const { initTour } = await import('./tour.js');
   window.__tour = initTour({ applyState, getState, sharedLink: ARRIVED_ON_LINK,
     menu: { open: () => openViewMenu(false), close: () => closeViewMenu() } });

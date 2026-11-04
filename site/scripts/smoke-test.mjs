@@ -78,7 +78,7 @@ const page = await browser.newPage();
 await page.setViewport({ width: 1400, height: 900 });
 // The first-visit tour would open over everything tested below; it has its
 // own checks in clean browser contexts at the end.
-await page.evaluateOnNewDocument(() => { try { localStorage.setItem('mtcad.tour.v1', 'done'); } catch { /* none */ } });
+await page.evaluateOnNewDocument(() => { try { localStorage.setItem('mtcad.tour.v1', 'done'); localStorage.setItem('mtcad.terms.v1', 'accepted'); } catch { /* none */ } });
 
 const errors = [];
 const ranged = [];
@@ -838,6 +838,17 @@ ok('the slider moves a marker on the Holdings time charts',
   const terr = [];
   tp.on('pageerror', (e) => terr.push(String(e)));
   await tp.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 60000 });
+  // The terms of use open first, alone, with focus on their button; the tour waits.
+  await tp.waitForSelector('#terms-ok', { timeout: 30000 });
+  const terms = await tp.evaluate(() => ({ focus: document.activeElement?.id, tour: !!document.querySelector('#tour:not([hidden])'),
+    modal: document.querySelector('#terms .terms-card')?.getAttribute('aria-modal'),
+    text: document.getElementById('terms-body').textContent.replace(/\s+/g, ' '),
+    links: [...document.querySelectorAll('#terms a')].map((a) => a.href) }));
+  ok('a first visit opens on the terms of use, before the tutorial',
+    terms.focus === 'terms-ok' && !terms.tour && terms.modal === 'true' && /informational purposes only/.test(terms.text)
+    && /not suitable for, legal, engineering/.test(terms.text) && /withheld/.test(terms.text)
+    && terms.links.some((h) => /AB-NonDisc/.test(h)) && terms.links.some((h) => /contact/.test(h)), JSON.stringify(terms).slice(0, 400));
+  await tp.click('#terms-ok');
   try { await tp.waitForFunction(() => window.__tour && window.__tour.open && window.__tour.ready, { timeout: 30000 }); }
   catch (err) {
     console.log('tour wait:', JSON.stringify(await tp.evaluate(() => ({ tour: typeof window.__tour, open: window.__tour?.open,
@@ -911,6 +922,11 @@ ok('the slider moves a marker on the Holdings time charts',
   const pp = await ctxP.newPage();
   await pp.setViewport({ width: 390, height: 844 });
   await pp.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 60000 });
+  await pp.waitForSelector('#terms-ok', { timeout: 30000 });
+  const termsFit = await pp.evaluate(() => { const r = document.querySelector('#terms .terms-card').getBoundingClientRect();
+    return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; });
+  ok('on a phone the terms of use fit the screen', termsFit);
+  await pp.click('#terms-ok');
   await pp.waitForFunction(() => window.__tour && window.__tour.open && window.__tour.ready, { timeout: 30000 });
   const covered = [];
   for (let k = 0; k < 40; k++) {
@@ -934,6 +950,9 @@ ok('the slider moves a marker on the Holdings time charts',
   const sp = await ctx2.newPage();
   await sp.setViewport({ width: 1400, height: 900 });
   await sp.goto(`${BASE}/#v=holdings&s=19`, { waitUntil: 'networkidle2', timeout: 60000 });
+  // A shared link still opens behind the terms of use on a first visit.
+  await sp.waitForSelector('#terms-ok', { timeout: 30000 });
+  await sp.click('#terms-ok');
   await new Promise((r) => setTimeout(r, 2000));
   const shared = await sp.evaluate(() => ({ open: window.__tour?.open, hint: !document.getElementById('tour-hint').hidden,
     view: window.__dash.getState().view }));
@@ -1032,6 +1051,16 @@ ok('a selection steers the charts only while on screen; panned away, they follow
   && /out of view/.test(selView.boz.note) && /In view/.test(selView.boz.note)
   && selView.boz.total !== selView.state.total && selView.boz.lines.includes('Gallatin County'),
   JSON.stringify(selView));
+
+const aboutTerms = await page.evaluate(async () => {
+  await window.__dash.applyState({ view: 'about' });
+  await new Promise((r) => setTimeout(r, 800));
+  const h = [...document.querySelectorAll('#panel h3, #panel h2')].map((x) => x.textContent);
+  const txt = document.getElementById('panel').textContent;
+  await window.__dash.applyState({ view: 'ladder' });
+  return { terms: h.includes('Terms of use'), ab: /AB-NonDisc/.test(txt), asIs: /without warranty/.test(txt) };
+});
+ok('About carries the terms of use', aboutTerms.terms && aboutTerms.ab && aboutTerms.asIs, JSON.stringify(aboutTerms));
 
 ok('no console errors', errors.length === 0, errors.slice(0, 4).join(' | '));
 

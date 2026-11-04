@@ -179,7 +179,7 @@ cd site && npm install
 npm run data            # = python -m timeseries.publish
 npm run tiles           # = python -m timeseries.tiles (about 25 minutes)
 npm run build && npm run preview
-SMOKE_URL=http://127.0.0.1:4321 npm run test:smoke     # 156 checks
+SMOKE_URL=http://127.0.0.1:4321 npm run test:smoke     # 159 checks
 npm run test:unit       # the state, the query grammar, the resolver, the tool schemas (node --test)
 npm run reports:pdf     # composes every report through the print path (needs a preview on SMOKE_URL)
 ```

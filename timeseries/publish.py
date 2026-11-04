@@ -49,6 +49,11 @@ CAMA_DIR = "data/cama"
 COVER_DIR = "data/coverage"
 EVENT_DIR = "data/events"
 OUT_DIR = "site/public/data"
+# Owners who asked for their name not to be shown (one name per line, as the
+# Holdings view shows it; optional county_n). Kept out of git: it is a list of
+# people who asked not to be listed. See name_withheld.example.csv.
+WITHHELD_CSV = "name_withheld.csv"
+WITHHELD_LABEL = "Name withheld on request"
 
 PARQUET_KW = dict(compression="gzip", index=False)
 
@@ -77,6 +82,33 @@ FLOW_COLS = ["created", "retired", "persisted", "lot_created", "block_created",
 
 STATE_BUCKETS = ["MT", "CA", "WA", "TX", "CO", "FL", "AZ", "ID", "UT", "WY",
                  "other_us", "unknown"]
+
+
+def _norm_name(v) -> str:
+    return " ".join(str(v or "").upper().split())
+
+
+def withhold_names(top: pd.DataFrame, path: str = WITHHELD_CSV) -> tuple[pd.DataFrame, int]:
+    """Replace the names (and mailing city and state) of owners on the withheld
+    list with WITHHELD_LABEL, in every county and vintage, or only in the
+    county given. Matching ignores case and spacing. Returns (table, rows hit)."""
+    if not os.path.exists(path):
+        return top, 0
+    w = pd.read_csv(path, dtype=str).fillna("")
+    if "name" not in w.columns:
+        raise ValueError(f"{path} needs a 'name' column")
+    every = {_norm_name(n) for n, c in zip(w["name"], w.get("county_n", [""] * len(w))) if n.strip() and not c.strip()}
+    by_county = {(_norm_name(n), int(c)) for n, c in zip(w["name"], w.get("county_n", [""] * len(w)))
+                 if n.strip() and c.strip()}
+    names = top["display_name"].map(_norm_name)
+    hit = names.isin(every) | pd.Series([(n, int(c)) in by_county for n, c in zip(names, top["county_n"])],
+                                        index=top.index, dtype=bool)
+    top = top.copy()
+    top.loc[hit, "display_name"] = WITHHELD_LABEL
+    for c in ("display_city", "display_state"):
+        if c in top.columns:
+            top.loc[hit, c] = ""
+    return top, int(hit.sum())
 
 
 def _narrow(df: pd.DataFrame) -> pd.DataFrame:
@@ -338,6 +370,9 @@ def build(out_dir: str = OUT_DIR, delta: bool = True) -> dict:
         tcols = ["county_n", "s", "rank", "display_name", "display_city", "display_state", "acres",
                  "acres_if_merged", "n_parcels", "is_entity", "review_status", "n_names",
                  "pending_links", "strong", "token", "conflict", "oos", "group_hash"]
+        top, n_withheld = withhold_names(top)
+        if n_withheld:
+            log.info("holdings_top: %d rows withheld on request (%s)", n_withheld, WITHHELD_CSV)
         files["holdings_top"] = _write(top[tcols], os.path.join(out_dir, "holdings_top.parquet"))
         rv = pd.read_parquet(os.path.join(FACT_DIR, "holdings_review.parquet"))
         rv["s"] = rv["snapshot"].map(snap_id)

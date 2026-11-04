@@ -8,6 +8,37 @@
    apart. Pure: given the dimension tables, returns strings.
 --------------------------------------------------------------------------- */
 export const CONTACT_URL = 'https://www.epistemegeospatial.com/contact';
+export const DOR_FIELD_OFFICES = 'https://revenue.mt.gov/contact/field-office-locations/';
+export const DOR_NONDISCLOSURE = 'https://revenuefiles.mt.gov/files/Forms/Request-for-Nondisclosure-of-Property-Record-Information-Form-AB-NonDisc.pdf';
+
+/* The terms of use: shown once as the opening notice (disclaimer.js) and kept
+   in About. Modelled on the Montana State Library's disclaimer for the
+   Montana Cadastral and the Department of Revenue's nondisclosure notice. */
+export const DISCLAIMER_TITLE = 'Before you begin: about this information';
+export const DISCLAIMER_HTML = `
+      <p><strong>For information only.</strong> Episteme Geospatial provides the Montana Cadastral Analytics Engine
+      for informational purposes only. It was not produced for, and is not suitable for, legal, engineering,
+      surveying, appraisal or title purposes. Parcel lines are not a legal depiction of public or private land
+      ownership boundaries and do not replace a survey by a licensed land surveyor. Check the primary records
+      before relying on anything shown here.</p>
+      <p><strong>Not an official record.</strong> The parcels and their owners come from the Montana Cadastral
+      Framework, which the Montana State Library publishes from the Montana Department of Revenue’s property
+      records, and the building records from the Department of Revenue’s appraisal database. The figures are
+      Episteme Geospatial’s analysis of those exports. They are not statistics of either agency, and neither
+      agency has reviewed or endorsed them.</p>
+      <p><strong>Provided as is.</strong> The information is provided without warranty of any kind, express or
+      implied, including accuracy, completeness, timeliness or fitness for a particular purpose, and Episteme
+      Geospatial accepts no liability for any loss or damage arising from its use. Only the Department of Revenue
+      can correct the property record: report an error in a parcel or its owner to the
+      <a href="${DOR_FIELD_OFFICES}" target="_blank" rel="noopener">Department of Revenue field office</a> for the county.
+      Report an error in this site’s analysis through the <a href="${CONTACT_URL}" target="_blank" rel="noopener">contact page</a>.</p>
+      <p><strong>Owner names.</strong> Property ownership is public record, and, as on the Montana Cadastral, the
+      largest holdings in each county are named. Owner locations are mailing addresses, not residences. An owner
+      whose safety is threatened by the display of their name may ask the Department of Revenue to hide it on the
+      state’s property web applications (<a href="${DOR_NONDISCLOSURE}" target="_blank" rel="noopener">Form AB-NonDisc</a>).
+      That request does not reach downloaded data or other websites, so to have a name withheld here as well,
+      send a request through the <a href="${CONTACT_URL}" target="_blank" rel="noopener">contact page</a>; it is
+      withheld from the next update.</p>`;
 
 /** @returns {{key: string, title: string, html: string, prompt: boolean}[]}
  *  `prompt` says whether the section goes into the assistant's instructions. */
@@ -33,6 +64,7 @@ export function aboutSections(dim, meta) {
       working instrument for the questions the cadastral record can answer: where land is being
       divided, who owns it and from where, what has actually been built on it, and how concentrated
       large private holdings have become.</p>` },
+    { key: 'terms', title: 'Terms of use', prompt: true, html: DISCLAIMER_HTML },
     { key: 'how', title: 'How to use it', prompt: false, html: `
       <ul>
         <li><strong>The Tutorial button</strong> in the header walks through every part of the page in about two minutes.
@@ -233,7 +265,7 @@ export function aboutSections(dim, meta) {
         <li>Agricultural-use acreage is clamped to each parcel’s own area, since some exports report more
           agricultural acres than mapped acres.</li>
         <li>No parcel-level owner information is published. The largest holdings are named from the public
-          cadastral record.</li>
+          cadastral record; a name withheld on request reads “Name withheld on request” (see Terms of use).</li>
       </ul>` },
     { key: 'contact', title: 'Questions and comments', prompt: false, html: `
       <p>This dashboard is a project of <a href="https://www.epistemegeospatial.com/">Episteme Geospatial</a>.
