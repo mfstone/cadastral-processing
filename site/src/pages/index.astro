@@ -1,14 +1,44 @@
 ---
 import '@fontsource-variable/source-serif-4';
 import '../styles/viz.css';
+
+const title = 'Montana Cadastral Analytics Engine';
+const description = 'Where parcels are being created, who owns Montana, and what has actually been built — over 29 statewide cadastral vintages.';
+
+/* Link previews need absolute URLs: a crawler resolves nothing relative to the
+   page it fetched. `?v=` is a cache-buster, because LinkedIn, Slack and the rest
+   cache a card per URL for days; bump it whenever the picture changes. PNG, not
+   WebP, since WebP support among preview crawlers is still patchy. */
+const SITE = 'https://cadastral-analytics.epistemegeospatial.com';
+const CARD_VERSION = '2026-11-04';
+const canonical = `${SITE}/`;
+const card = `${SITE}/social-card.png?v=${CARD_VERSION}`;
+const cardAlt = 'The Montana Cadastral Analytics Engine: a map of Montana shaded by township, beside '
+  + 'the development ladder and absorption charts for the newest export.';
 ---
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Montana Cadastral Analytics Engine</title>
-  <meta name="description" content="Where parcels are being created, who owns Montana, and what has actually been built — over 29 statewide cadastral vintages." />
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <link rel="canonical" href={canonical} />
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content={description} />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content={canonical} />
+  <meta property="og:site_name" content={title} />
+  <meta property="og:image" content={card} />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content={cardAlt} />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={title} />
+  <meta name="twitter:description" content={description} />
+  <meta name="twitter:image" content={card} />
+  <meta name="twitter:image:alt" content={cardAlt} />
   <link rel="icon" href="/favicon.svg" />
 </head>
 <body>
