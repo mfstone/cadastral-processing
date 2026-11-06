@@ -39,7 +39,13 @@ const cardAlt = 'The Montana Cadastral Analytics Engine: a map of Montana shaded
   <meta name="twitter:description" content={description} />
   <meta name="twitter:image" content={card} />
   <meta name="twitter:image:alt" content={cardAlt} />
-  <link rel="icon" href="/favicon.svg" />
+  <!-- favicon.svg is transparent, theme-adaptive and haloed (see its own
+       comment); the rasters are its dark scheme on transparency, for Safari
+       and for crawlers that take a bitmap. Same set on every Episteme site. -->
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.ico" sizes="48x48" />
+  <link rel="icon" href="/icon-96.png" type="image/png" sizes="96x96" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 </head>
 <body>
   <div id="boot">Loading 29 cadastral vintages…</div>
